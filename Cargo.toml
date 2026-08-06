@@ -9,3 +9,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 diffy = "0.5"
 anyhow = "1.0" # For flexible error handling
+wait-timeout = "0.2.1"
