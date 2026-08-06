@@ -159,9 +159,9 @@ impl PatchRefiner {
                     };
                 }
 
-                let deviation_diff = create_patch(&ai_result, &p_result);
-                let deviation_str = deviation_diff.to_string();
-                let distance = Self::compute_distance(deviation_diff, &config.similarity);
+                let inter_diff = create_patch(&ai_result, &p_result);
+                let deviation_str = inter_diff.to_string();
+                let distance = Self::compute_distance(inter_diff, &config.similarity);
 
                 if best_deviation
                     .as_ref()
@@ -243,5 +243,85 @@ impl PatchRefiner {
             reasoning: None,
             diagnostics,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_text_crlf() {
+        let cfg = WhitespaceConfig {
+            ignore_whitespace: false,
+            normalize_line_endings: true,
+        };
+        let input = "line1\r\nline2\rline3\n";
+        let output = PatchRefiner::normalize_text(input, &cfg);
+        assert_eq!(output, "line1\nline2\nline3\n");
+    }
+
+    #[test]
+    fn test_normalize_text_ignore_whitespace() {
+        let cfg = WhitespaceConfig {
+            ignore_whitespace: false,
+            normalize_line_endings: true,
+        };
+        let input = "line\t1  \n  line\t 2\nline  3\n";
+        let output = PatchRefiner::normalize_text(input, &cfg);
+        assert_eq!(output, "line\t1  \n  line\t 2\nline  3\n");
+    }
+    #[test]
+    fn test_resolve_mode() {
+        let mut req = RefinementRequest {
+            schema_version: None,
+            original_code: String::new(),
+            candidates: Vec::new(),
+            perfect_patches: None,
+            problem_statement: None,
+            config: None,
+        };
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode3);
+        req.perfect_patches = Some(Vec::new());
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode3);
+        req.perfect_patches.as_mut().map(|p| {
+            p.push(PerfectPatch {
+                id: String::new(),
+                diff_content: String::new(),
+                reason: Some(Reason {
+                    summary: String::new(),
+                    details: Vec::new(),
+                }),
+            })
+        });
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode1);
+        req.perfect_patches.as_mut().map(|p| p[0].reason.take());
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode2);
+        req.config = Some(RefinementConfig {
+            mode_override: Some(ApplicationMode::Mode1),
+            ..Default::default()
+        });
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode1);
+    }
+
+    #[test]
+    fn test_compute_distance_empty_patch() {
+        let patch = Patch::from_str("").unwrap();
+        assert_eq!(
+            PatchRefiner::compute_distance(patch, &Default::default()),
+            0
+        );
+    }
+
+    #[test]
+    fn test_compute_distance_weights() {
+        let id = "--- y\n+++ y\n@@ -2,4 +2,4 @@\n +++ x\n @@ -1 +1 @@\n -a\n-+b\n++c\n";
+        let inter_diff = Patch::from_str(id).unwrap();
+        let cfg = SimilarityConfig {
+            add_weight: 1.0,
+            del_weight: 2.0,
+            ..Default::default()
+        };
+        assert_eq!(PatchRefiner::compute_distance(inter_diff, &cfg), 3);
     }
 }
