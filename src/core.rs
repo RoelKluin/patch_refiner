@@ -1,17 +1,26 @@
 use crate::checkers::{CompileChecker, SemanticChecker};
 use crate::models::*;
+use anyhow::{anyhow, Result};
 use diffy::{apply, create_patch, Patch};
 
 pub struct PatchRefiner;
 
 impl PatchRefiner {
-    pub fn evaluate(req: RefinementRequest) -> RefinementResponse {
+    pub fn evaluate(req: RefinementRequest) -> Result<RefinementResponse> {
         let config = req.config.clone().unwrap_or_default();
+        config
+            .semantic_checks
+            .validate()
+            .map_err(|e| anyhow!("Semantic checks config validation failed: {}", e))?;
+        config
+            .similarity
+            .validate()
+            .map_err(|e| anyhow!("Similarity config validation failed: {}", e))?;
         let mode = Self::resolve_mode(&req);
 
         let perfect_patches = req.perfect_patches.clone().unwrap_or_default();
 
-        if mode == ApplicationMode::Mode3 {
+        Ok(if mode == ApplicationMode::Mode3 {
             Self::evaluate_mode_3(&req.original_code, &req.candidates, &config)
         } else {
             Self::evaluate_modes_1_2_4(
@@ -21,7 +30,7 @@ impl PatchRefiner {
                 mode,
                 &config,
             )
-        }
+        })
     }
 
     fn resolve_mode(req: &RefinementRequest) -> ApplicationMode {

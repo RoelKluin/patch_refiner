@@ -33,9 +33,28 @@ pub struct SemanticChecksConfig {
     pub test_command: Option<String>,
     pub timeout_secs: Option<u64>,
 }
+impl SemanticChecksConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(timeout) = self.timeout_secs {
+            if timeout == 0 {
+                return Err("timeout_secs must be > 0".to_string());
+            }
+        }
+        if self.run_compile_check && self.compile_command.is_none() {
+            return Err("run_compile_check=true requires compile_command".to_string());
+        }
+        Ok(())
+    }
+}
 impl Default for SemanticChecksConfig {
     fn default() -> Self {
-        Self { run_compile_check: false, run_tests: false, compile_command: None, test_command: None, timeout_secs: Some(30) }
+        Self {
+            run_compile_check: false,
+            run_tests: false,
+            compile_command: None,
+            test_command: None,
+            timeout_secs: Some(30),
+        }
     }
 }
 
@@ -46,9 +65,24 @@ pub struct SimilarityConfig {
     pub mod_weight: f64,
     pub ignore_comments: bool,
 }
+
+impl SimilarityConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.add_weight < 0.0 || self.del_weight < 0.0 || self.mod_weight < 0.0 {
+            return Err("Weights must be non-negative".to_string());
+        }
+        Ok(())
+    }
+}
+
 impl Default for SimilarityConfig {
     fn default() -> Self {
-        Self { add_weight: 1.0, del_weight: 1.0, mod_weight: 1.5, ignore_comments: false }
+        Self {
+            add_weight: 1.0,
+            del_weight: 1.0,
+            mod_weight: 1.5,
+            ignore_comments: false,
+        }
     }
 }
 
@@ -59,7 +93,10 @@ pub struct WhitespaceConfig {
 }
 impl Default for WhitespaceConfig {
     fn default() -> Self {
-        Self { ignore_whitespace: true, normalize_line_endings: true }
+        Self {
+            ignore_whitespace: true,
+            normalize_line_endings: true,
+        }
     }
 }
 
@@ -95,13 +132,18 @@ pub struct ReasonDetail {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationMode {
-    Mode1, Mode2, Mode3, Mode4,
+    Mode1,
+    Mode2,
+    Mode3,
+    Mode4,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
-    Approved, Rejected, Failed,
+    Approved,
+    Rejected,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,11 +164,22 @@ pub struct Diagnostic {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum DiagnosticLevel { Info, Warning, Error }
+pub enum DiagnosticLevel {
+    Info,
+    Warning,
+    Error,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum DiagnosticCategory { PatchParse, PatchApply, Compile, Test, Similarity, Other }
+pub enum DiagnosticCategory {
+    PatchParse,
+    PatchApply,
+    Compile,
+    Test,
+    Similarity,
+    Other,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceLocation {

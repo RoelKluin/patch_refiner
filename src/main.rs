@@ -64,7 +64,7 @@ fn main() -> Result<()> {
 
     request.config = Some(config);
 
-    let response = PatchRefiner::evaluate(request);
+    let response = PatchRefiner::evaluate(request)?;
 
     let output_json = serde_json::to_string_pretty(&response)?;
     println!("{}", output_json);
