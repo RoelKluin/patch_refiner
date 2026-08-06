@@ -1,4 +1,4 @@
-use crate::checkers::{CompileChecker, SemanticChecker};
+use crate::checkers::{CompileChecker, SemanticChecker, TestChecker};
 use crate::models::*;
 use anyhow::{anyhow, Result};
 use diffy::{apply, create_patch, Patch};
@@ -202,7 +202,8 @@ impl PatchRefiner {
         config: &RefinementConfig,
     ) -> RefinementResponse {
         let mut diagnostics = Vec::new();
-        let checkers: Vec<Box<dyn SemanticChecker>> = vec![Box::new(CompileChecker)];
+        let checkers: Vec<Box<dyn SemanticChecker>> =
+            vec![Box::new(CompileChecker), Box::new(TestChecker)];
 
         for candidate in candidates {
             if let Ok(patch) = Patch::from_str(&candidate.diff_content) {

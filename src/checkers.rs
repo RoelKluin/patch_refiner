@@ -30,8 +30,10 @@ impl SemanticChecker for CompileChecker {
         if !config.run_compile_check {
             return vec![];
         }
-        // TODO: Implement actual subprocess compilation logic based on config.compile_command
-        vec![]
+        let cmd = "cargo build".to_string();
+        let cmd = config.compile_command.as_ref().unwrap_or(&cmd);
+        let timeout = config.timeout_secs.unwrap_or(30);
+        execute_command_with_timeout(cmd, timeout)
     }
 }
 
@@ -68,34 +70,46 @@ fn execute_command(cmd: &str, timeout_secs: u64) -> Result<(bool, String), Strin
     }
 }
 
-fn check(_original: &str, _patched: &str, config: &SemanticChecksConfig) -> Vec<Diagnostic> {
-    if !config.run_compile_check {
-        return vec![];
-    }
-    let cmd = "cargo build".to_string();
-    let cmd = config.compile_command.as_ref().unwrap_or(&cmd);
-    let timeout = config.timeout_secs.unwrap_or(30);
-
+fn execute_command_with_timeout(cmd: &str, timeout: u64) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
     match execute_command(cmd, timeout) {
         Ok((success, output)) => {
             if !success {
-                vec![Diagnostic {
+                diags.push(Diagnostic {
                     level: DiagnosticLevel::Error,
                     category: DiagnosticCategory::Compile,
                     message: output,
                     location: None,
-                }]
-            } else {
-                vec![]
+                })
             }
         }
-        Err(e) => {
-            vec![Diagnostic {
-                level: DiagnosticLevel::Error,
-                category: DiagnosticCategory::Compile,
-                message: format!("Compile check error: {}", e),
-                location: None,
-            }]
+        Err(e) => diags.push(Diagnostic {
+            level: DiagnosticLevel::Error,
+            category: DiagnosticCategory::Compile,
+            message: format!("Compile check error: {}", e),
+            location: None,
+        }),
+    }
+    diags
+}
+
+pub struct TestChecker;
+impl SemanticChecker for TestChecker {
+    fn name(&self) -> &str {
+        "test"
+    }
+    fn check(
+        &self,
+        _original: &str,
+        _patched: &str,
+        config: &SemanticChecksConfig,
+    ) -> Vec<Diagnostic> {
+        if !config.run_tests {
+            return vec![];
         }
+        let cmd = "cargo test".to_string();
+        let cmd = config.test_command.as_ref().unwrap_or(&cmd);
+        let timeout = config.timeout_secs.unwrap_or(30);
+        execute_command_with_timeout(cmd, timeout)
     }
 }
