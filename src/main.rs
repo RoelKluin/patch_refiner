@@ -23,6 +23,18 @@ struct Cli {
 
     #[arg(long)]
     ignore_whitespace: bool,
+
+    #[arg(long)]
+    language: Option<String>,
+}
+
+pub fn default_commands(language: &str) -> (String, String) {
+    match language {
+        "rust" => ("cargo build".into(), "cargo test".into()),
+        "bash" => ("bash -n".into(), "bats *.bats".into()), // syntax check + bats tests
+        "markdown" => ("true".into(), "mdl .".into()),      // markdown-lint
+        _ => ("".into(), "".into()),
+    }
 }
 
 fn main() -> Result<()> {
@@ -36,6 +48,9 @@ fn main() -> Result<()> {
             buf
         }
     };
+
+    // FIXME: what to do with these linters?
+    let _default_commands = default_commands(cli.language.as_deref().unwrap_or(""));
 
     let mut request: RefinementRequest = serde_json::from_str(&input_data)
         .map_err(|e| anyhow!("Failed to parse JSON request:\n{e}"))?;
