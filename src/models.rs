@@ -20,7 +20,7 @@ pub struct RefinementConfig {
     #[serde(default)]
     pub semantic_checks: SemanticChecksConfig,
     #[serde(default)]
-    pub similarity: SimilarityConfig,
+    pub language_weights: Option<LanguageWeights>,
     #[serde(default)]
     pub whitespace: WhitespaceConfig,
 }
@@ -59,30 +59,39 @@ impl Default for SemanticChecksConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SimilarityConfig {
-    pub add_weight: f64,
-    pub del_weight: f64,
-    pub mod_weight: f64,
-    pub ignore_comments: bool,
+pub struct LanguageWeights {
+    pub code_weight: f64,
+    pub string_weight: f64,
+    pub comment_weight: f64,
+    pub string_delimiters: Vec<String>, // e.g., ["\"", "'"]
+    pub comment_markers: Vec<(String, String)>, // e.g., [("//", ""), ("/*", "*/")]
 }
 
-impl SimilarityConfig {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.add_weight < 0.0 || self.del_weight < 0.0 || self.mod_weight < 0.0 {
-            return Err("Weights must be non-negative".to_string());
+impl Default for LanguageWeights {
+    fn default() -> Self {
+        // Rust defaults
+        Self {
+            code_weight: 1.0,
+            string_weight: 0.1,
+            comment_weight: 0.05,
+            string_delimiters: vec!["\"".to_string()],
+            comment_markers: vec![
+                ("//".to_string(), "".to_string()),
+                ("/*".to_string(), "*/".to_string()),
+            ],
         }
-        Ok(())
     }
 }
 
-impl Default for SimilarityConfig {
-    fn default() -> Self {
-        Self {
-            add_weight: 1.0,
-            del_weight: 1.0,
-            mod_weight: 1.5,
-            ignore_comments: false,
+impl LanguageWeights {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.code_weight <= self.string_weight {
+            return Err("code_weight must be > string_weight".to_string());
         }
+        if self.string_weight < self.comment_weight {
+            return Err("string_weight must be >= comment_weight".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -151,7 +160,7 @@ pub struct Deviation {
     pub candidate_id: String,
     pub closest_perfect_patch_id: String,
     pub diff_from_perfect: String,
-    pub distance_score: usize,
+    pub distance_score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

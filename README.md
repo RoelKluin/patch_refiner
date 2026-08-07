@@ -342,7 +342,7 @@ The authoritative schema is defined by the Rust types in `src/models.rs`:
 - `PatchCandidate`
 - `PerfectPatch`
 - `Reason` / `ReasonDetail`
-- `RefinementConfig`, `SemanticChecksConfig`, `SimilarityConfig`, `WhitespaceConfig`
+- `RefinementConfig`, `SemanticChecksConfig`, `LanguageWeights`, `WhitespaceConfig`
 - `Diagnostic`, `DiagnosticLevel`, `DiagnosticCategory`, `SourceLocation`
 
 For most use cases, follow the examples in this README and adjust fields as needed.
