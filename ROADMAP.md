@@ -1,184 +1,221 @@
-# patch_refiner Roadmap
+# patch_refiner - Roadmap
 
-**Project**: AI Patch Refinement Module for APR (Automated Program Repair)  
-**Current Version**: 0.1.0  
-**Status**: Alpha - Core logic complete, semantic checkers incomplete
+**Type:** Technical/engineering roadmap for a library, not a customer-facing product.
+**Owner:** single maintainer (Roelof J.C. Kluin).
+**Verified against:** `src/{lib,models,core,checkers,main}.rs`, `Cargo.toml`, `README.md`,
+`docs/DIFF_FORMAT.md`, `CLAUDE.md` - direct source read, superseding the prior
+documentation-only draft. Every status below cites the function or file it was
+confirmed against;
 
----
-
-## Phase 1: Critical Path (Blockers)
-
-### 1.1 Implement Subprocess Execution (HIGH PRIORITY)
-- **Issue**: `CompileChecker::check()` is stubbed; Mode 3 evaluation cannot run
-- **Work**:
-  - Implement subprocess spawning with `std::process::Command`
-  - Handle timeout enforcement via `config.semantic_checks.timeout_secs`
-  - Capture stdout/stderr and convert to `Diagnostic` objects
-  - Parse compiler error output (language-specific: rustc, gcc, clang, javac, etc.)
-- **Assumption**: `compile_command` in config is a shell-escaped string (e.g., `"cargo build"`)
-- **Acceptance**: Mode 3 can select first passing candidate or return `Failed` decision
-
-### 1.2 Implement Test Runner
-- **Issue**: `SemanticChecksConfig.run_tests` flag exists but no checker implements it
-- **Work**:
-  - Create `TestChecker` similar to `CompileChecker`
-  - Execute `config.semantic_checks.test_command` with timeout
-  - Distinguish test pass/fail from test runner errors
-  - Aggregate test failures into `Diagnostic` objects
-- **Acceptance**: Mode 3 accepts patches that pass both compile + tests
+**Revision note (2026-08-09):** This supersedes `PATCH_REFINER_ROADMAP.md` +
+`PATCH_REFINER_ROADMAP_BACKLOG.md`. Two corrections to that draft:
+1. All "confirmed resolved (documentation-based)" items are moved to DONE.md 
+   (`WhitespaceConfig` validation) turned out to be only partially true; corrected
+   below rather than carried forward.
+2. **The multi-file assumption was wrong.** The prior draft re-scoped multi-file diff
+   support to "not urgent" based on an assumption that `ruchat` sends only sequential
+   single-file patches. That assumption is now confirmed incorrect: **`ruchat` does
+   need multi-file diff support from this crate.** This moves multi-file support from
+   §3 (deferred) to §2 (Next, blocking) - see the note there for what changes as a
+   result.
 
 ---
 
-## Phase 2: Correctness & Robustness
+## Vision
 
-### 2.1 Error Handling in CLI
-- **Issue**: `main.rs` uses `.expect()` for JSON parsing; silently fails on stdin read
-- **Work**:
-  - Replace `.expect()` with `?` propagation
-  - Add context to `anyhow::Error` messages (e.g., "Input JSON parse failed at line X")
-  - Return non-zero exit code on errors
-- **Acceptance**: Errors are logged with actionable context
+A dependable, sandboxed, library-first Rust crate that evaluates and refines
+AI-generated patch candidates for automated-program-repair pipelines - usable
+standalone and as a `ruchat` dependency, without either consumer's version
+constraints or CLI dependencies leaking into the other.
 
-### 2.2 Patch Parsing Robustness
-- **Issue**: `diffy::Patch::from_str()` may not handle all unified diff formats
-- **Work**:
-  - Test against non-standard diff outputs (git, unified, context formats)
-  - Add fallback diff parser if needed
-  - Document supported diff format in README
-- **Assumption**: Assuming unified diff format; needs verification with real APR systems
+## Status legend
 
-### 2.3 Validate Configuration
-- **Issue**: Invalid configs (e.g., negative weights, empty commands) silently pass
-- **Work**:
-  - Add validation method to each config struct
-  - Return `Diagnostic::Error` if `timeout_secs == 0` or weights are invalid
-  - Document constraints in model docs
-- **Acceptance**: Invalid configs produce clear error diagnostics
+- Confirmed open - verified directly against current source; the gap exists.
 
 ---
 
-## Phase 3: Features & Completeness
+## 1. Partially resolved
 
-### 3.1 Add More Semantic Checkers
-- **Priority Order**:
-  1. **LinterChecker**: Run style/lint tools (rustfmt, clippy, pylint, etc.)
-  2. **StaticAnalysisChecker**: Integration with SAT/SMT solvers or existing tools
-  3. **CustomCheckChecker**: Allow user-provided shell scripts as checkers
-- **Pattern**: Each checker implements `SemanticChecker` trait with early exit on fatal errors
-
-### 3.2 Expand Diagnostic Information
-- **Work**:
-  - Add `SourceLocation` population for compile/test errors
-  - Parse line:column from compiler output
-  - Link diagnostics to specific diff hunks in mode 1–2–4 reasoning
-- **Acceptance**: Diagnostics pinpoint exact file/line of failures
-
-### 3.3 Language-Specific Support
-- **Work**:
-  - Parameterize `compile_command` / `test_command` by language (Rust, Bash, Markdown)
-  - Provide defaults in CLI or config template
-  - Document per-language setup requirements
-- **Acceptance**: Out-of-box support for 3 languages without config tweaking
-
-### 3.4 Similarity Metric Improvements
-- **Current**: `compute_distance()` sums weights; doesn't penalize structural differences
-- **Work**:
-  - Consider tree-based diff (AST) for semantic similarity
-  - Add hunk locality penalty (scattered changes worse than contiguous)
-  - Profile performance impact
-- **Priority**: Lower; impacts Mode 1–2–4 ranking but not correctness
+Config validation exists as a *pattern* but is not uniformly applied - see $2.11,
+a new item found via this source read. `SemanticChecksConfig` and `LanguageWeights`
+each define `validate()`, but `WhitespaceConfig` does not, and **`evaluate()` only
+ever calls `config.semantic_checks.validate()`** - `LanguageWeights::validate()` is
+defined but never invoked anywhere in `core.rs`. The prior draft's blanket "config
+validation exists as a pattern" is true of the code shape but not of runtime
+enforcement; do not treat `LanguageWeights` values as validated until §2.11 is closed.
 
 ---
 
-## Phase 4: Testing & Documentation
+## 2. Open, ordered by risk
 
-### 4.1 Unit Tests
-- **Scope**:
-  - `normalize_text()` with edge cases (CRLF, trailing spaces, empty lines)
-  - `compute_distance()` with various patch types
-  - Mode resolution logic (`resolve_mode()`)
-  - JSON serialization round-trip for all model types
-- **Coverage Target**: ≥80% for `core.rs` and `models.rs`
+### 2.1 Subprocess sandboxing - highest actual-harm item
+`checkers.rs::execute_command` parses commands via `cmd.split_whitespace()` and spawns
+directly with `std::process::Command` - no shell, but also no quoting support (a
+command needing a quoted argument with embedded spaces is silently mis-split, not
+rejected), no environment filtering, and no memory/CPU limits (only `wait_timeout`
+wall-clock enforcement). This was lower risk while checkers were stubs; they now run
+real commands against real model output. `ruchat`'s
+`orchestrator::cargo::limit_resources` (`RLIMIT_AS`/`RLIMIT_CPU` + wall-clock timeout)
+is a working, tested pattern to port - see
+`INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` §A.4.
 
-### 4.2 Integration Tests
-- **Scope**:
-  - End-to-end Mode 1–4 evaluation with mock patches
-  - Subprocess invocation with timeout (mock subprocess if needed)
-  - CLI arg parsing and JSON I/O
-  - Error recovery (malformed input, missing fields)
-- **Test Data**: Include sample JSON requests + expected responses per mode
+### 2.2 Multi-file diff support - corrected priority, now blocking
+`PatchCandidate.diff_content: String` and `RefinementRequest.original_code: String`
+are still single-file shapes; `evaluate_modes_1_2_4`/`evaluate_mode_3` both call
+`diffy::apply(original, &patch)` once per candidate. `docs/DIFF_FORMAT.md` documents
+this as a known limitation ("multiple files in a single patch... behavior is
+implementation-defined").
 
-### 4.3 Documentation
-- **README**: Quick-start, modes explained, CLI usage, config schema
-- **docs/ARCHITECTURE.md**: Design rationale, mode decision tree, extensibility (adding checkers)
-- **docs/INTEGRATION.md**: Subprocess expectations, diff format, example client usage
-- **In-code**: Doc comments on public APIs, assumptions in complex logic
+**This is now a blocker for the `ruchat` integration**, not a standalone-evaluator
+nicety - see the revision note above. Concretely this means:
+- The §3 (Next) boundary-drawing work cannot finalize its public API shape
+  (`refine`/`apply`-style, structured facts only) without deciding the multi-file
+  request/response shape first - designing that boundary and then reworking it for
+  multi-file later is the more expensive order.
+- Suggested shape to evaluate: `files: BTreeMap<PathBuf, String>` on both
+  `RefinementRequest.original_code` and per-candidate/per-perfect-patch diff content,
+  with `compute_distance` and diagnostics gaining a `file` dimension alongside the
+  existing line/column one.
+- Sequence this before §3, not after - re-flagging the dependency the prior draft got
+  backwards.
 
-### 4.4 Performance Benchmarks
-- **Baseline**: Evaluate 100 candidates against 10 perfect patches → target <1s
-- **Profile**: Identify bottlenecks in patch diffing and text normalization
-- **Acceptance**: Document performance budget and scaling limits
+### 2.3 Diagnostics dropped on the approved path (Modes 1/2/4)
+`evaluate_modes_1_2_4`'s exact-match return constructs `diagnostics: vec![]` on the
+approved path, discarding whatever was accumulated in the loop up to that point (e.g.
+warnings from other perfect patches that failed to parse or apply). Should return the
+accumulated `diagnostics` vector instead of a fresh empty one.
+
+### 2.4 Mode 3 swallows parse/apply errors silently
+`evaluate_mode_3`'s candidate loop is gated by
+`if let Ok(patch) = Patch::from_str(...) { if let Ok(ai_result) = apply(...) { ... } }`,
+a candidate that fails to parse or fails to apply produces **no diagnostic at all**,
+unlike `evaluate_modes_1_2_4`, which pushes a `Diagnostic` on both failure paths. A
+caller currently cannot distinguish "candidate was syntactically invalid" from
+"candidate parsed fine but failed compile/test checks" in Mode 3's response.
+
+### 2.5 `schema_version` accepted but never enforced
+`RefinementRequest.schema_version: Option<String>` is parsed but never compared
+against `models::SCHEMA_VERSION` anywhere in `evaluate()`. The response side is
+correctly disciplined (every return path sets
+`schema_version: crate::models::SCHEMA_VERSION.to_string()`), but a request declaring
+an incompatible schema version is silently processed rather than rejected.
+
+### 2.6 CLI mode flag silently clobbers a valid JSON `mode_override`
+```rust
+if let Some(m) = cli.mode {
+    config.mode_override = match m.to_lowercase().as_str() {
+        "mode1" => Some(ApplicationMode::Mode1),
+        ...
+        - => None,   // overwrites an existing valid JSON mode_override with None
+    };
+}
+```
+`main.rs`: an invalid `--mode` value unconditionally sets `config.mode_override =
+None`, discarding a valid value the input JSON may have already set. Should either
+leave `config.mode_override` untouched on an unrecognized flag value, or hard-error
+via `anyhow::bail!`.
+
+### 2.7 Boolean CLI flags are one-way overrides
+`--compile-check`, `--test-check`, `--ignore-whitespace` can only force a setting
+*on*; there's no way via CLI to disable something the input JSON enabled (`bool` flags
+via `clap`, not `Option<bool>`). Confirmed present in `main.rs` as originally flagged.
+
+### 2.8 `clap` is not feature-gated
+`Cargo.toml` has no `[features]` table; `clap` is an unconditional dependency. A
+library-only consumer (`ruchat`, once it depends on this crate) pulls in CLI parsing
+transitively. Needs a `cli` feature gating `main.rs`'s dependency and `[[bin]]` target.
+
+### 2.9 `anyhow` is in the public API
+`core.rs`: `pub fn evaluate(req: RefinementRequest) -> Result<RefinementResponse>` uses
+`anyhow::Result`; errors are constructed via `anyhow!` with no structured variant type.
+Confirmed still present, no `thiserror` migration has happened. Non-negotiable before
+`ruchat` depends on this crate per both independent reviews - `ruchat`'s own
+code-review standard independently confirms this isn't a one-sided ask.
+
+### 2.10 Per-language default commands computed but discarded
+`main.rs::default_commands()` return value is bound to `_default_commands` and never
+used - matches the `FIXME` directly above the call site. Small, well-scoped, real gap.
+
+### 2.11 Config validation not uniformly wired up (new, found via this read)
+- `WhitespaceConfig` has no `validate()` method at all, unlike its two sibling config
+  structs.
+- `LanguageWeights::validate()` exists (checks `code_weight > string_weight >=
+  comment_weight`) but is **never called** - `evaluate_modes_1_2_4` does
+  `config.language_weights.clone().unwrap_or_default()` with no validation step.
+- Only `config.semantic_checks.validate()` is actually invoked, in `evaluate()`.
+
+Fix: call `language_weights.validate()` alongside `semantic_checks.validate()` in
+`evaluate()`, and either add `WhitespaceConfig::validate()` (even as a no-op returning
+`Ok(())` for now, for consistency) or document why it's exempt.
 
 ---
 
-## Phase 5: Production Hardening
+## 3. Next - boundary + shadow mode with `ruchat`
 
-### 5.1 Logging & Observability
-- **Work**:
-  - Add `tracing` or `log` crate for debug/info/warn/error levels
-  - Log mode resolution, checker execution, decision rationale
-  - Structured logging for JSON output compatibility
-- **Acceptance**: Debugging without re-running difficult scenarios
+Contingent on §2 being closed, **including the now-blocking §2.2 multi-file work**.
+Draw a `refine`/`apply`-style boundary (structured facts out, no `diffy`/`anyhow`
+types across the public API - depends on §2.9), add it as a path dependency, run it
+alongside `ruchat`'s existing patch-validation logic without letting it decide
+anything, log every divergence.
 
-### 5.2 Dependency Review
-- **Issue**: `anyhow` is used but errors are JSON-serialized; may not round-trip
-- **Work**:
-  - Audit error types for JSON compatibility
-  - Add custom error struct if needed
-  - Pin versions or document MSRV (Minimum Supported Rust Version)
-
-### 5.3 Subprocess Safety
-- **Work**:
-  - Validate `compile_command` / `test_command` for shell injection risks
-  - Run subprocess with restricted environment (no secrets in subprocess env)
-  - Implement memory/CPU limits where OS allows (cgroups, etc.)
-- **Assumption**: Commands are trusted from config source; user input not directly used
-
-### 5.4 Concurrency (Future)
-- **Note**: Current implementation is single-threaded
-- **Work** (if needed):
-  - Parallelize candidate evaluation in Mode 3
-  - Isolate subprocess state (no global mutable state)
-  - Document thread-safety guarantees of checkers
+- **Milestone (the actual release gate, not a date):** shadow mode run against ≥50
+  real patch attempts spanning ≥3 models, zero unexplained divergence, and every
+  "both accepted, different output" case at zero.
+- **Stated invariant, not tribal knowledge:** repair logic must not derive rejections
+  from model-written `@@` hunk offsets. This is a documented `ruchat` regression
+  (commit `7998764`, reverted in `3a05df1`) - see
+  `INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` §A.2. Write this into this
+  crate's own docs (e.g. a `## Design invariants` section in `README.md`) rather than
+  leaving it only in the intelligence-transfer file.
+- Corpus-driven testing (`tests/corpus/`), sourced from `ruchat`'s failure traces -
+  see the intelligence-transfer file §B for the exact extraction procedure and
+  directory shape.
 
 ---
 
-## Known Unknowns
+## 4. Later - deferred by design, not urgent
 
-- **Diff Format**: Assumed unified diff; verify against real APR system outputs
-- **Subprocess Defaults**: No language-specific defaults exist; must be configured externally
-- **Patch Size Limits**: No bounds on candidate/perfect patch count; test at scale
-- **Whitespace Normalization**: `ignore_whitespace` trims all lines; may over-normalize (e.g., indentation-sensitive languages)
+Every prior review (code audit, integration review, all merge attempts) converges on
+sequencing these after a proven zero-false-repair shadow-mode rate; nothing in this
+source read changes that ordering:
+
+- Fuzzy/GNU-style context matching - `diffy` deliberately omits GNU patch's fuzzy
+  matching; likely the largest current source of refusals for otherwise-correct
+  diffs, but gated behind the shadow-mode metric first.
+- `git apply` as an alternate engine, behind a non-default feature so the core stays
+  pure/sync.
+- Anchor-based hunk relocation (ignore `@@` line numbers when context is unique) -
+  must be content-anchored per the §3 invariant, never offset-derived.
+- Indentation/whitespace renormalization - riskiest repair class per every review;
+  ship last, off by default.
+- Mode1–4 → semantic names (`ExemplarWithReason`, etc.) - confirmed still
+  `ApplicationMode::Mode1..Mode4` in `models.rs`. Real ergonomics win, but a breaking
+  API change; sequence once the public API is otherwise stable (i.e. after §2.9's
+  error-type migration, so it's one breaking-change window instead of two).
+- `compute_distance`'s comment/raw-string-aware lexer (`core.rs`) - went through
+  several rounds of hardening (buffering vs. premature marker commit, empty-string
+  literal edge case, hypothesis dedup-key correctness - see `CLAUDE.md`'s documented
+  invariants for this function). Current known failure modes from that hardening pass
+  are resolved; treat as "handle with care, re-run the full suite before touching,"
+  not as an open roadmap item unless a new bug surfaces.
 
 ---
 
-## Milestones
+## Dependencies
 
-| Phase | Target | Blocker Clearance |
-|-------|--------|-------------------|
-| Phase 1 | 2 weeks | Mode 3 functional |
-| Phase 2 | 1 week | Production-safe error handling |
-| Phase 3 | 4 weeks | Feature-complete for 3+ languages |
-| Phase 4 | 2 weeks | ≥80% test coverage |
-| Phase 5 | 2 weeks | Ready for beta deployment |
+- §3 depends on §2 being closed - don't add `ruchat` as a shadow-mode dependency
+  while checker sandboxing (§2.1) or the public error type (§2.9) are unresolved, and
+  don't finalize the boundary API shape before multi-file (§2.2) is decided.
+- §3 also depends on `ruchat` actually producing the intelligence described in
+  `INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` (a corpus of real failure traces,
+  the anti-pattern list) - that work happens on the `ruchat` side, not here.
+- The maintainer confirms this repo's local work is actually pushed to the remote, and
+  that CI exists and triggers on the  correct default branch. `ruchat` has a named,
+  live footgun here (`ci.yml` targeting `main` while the default branch is `master`) -
+  the master branch is correct.
 
-**Total Estimate**: 11 weeks (with parallelization potential in phases 3–5)
+## Where the detail is
 
----
-
-## Non-Goals (For Now)
-
-- GPU acceleration or large-scale parallelization (revisit at >10k candidates/run)
-- DSL for patch synthesis (out of scope; refiner only ranks/selects)
-- Visual UI or web interface (CLI + JSON is sufficient)
-- Support for patch formats other than unified diff
+`INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` - diff pathologies `ruchat`'s
+Worker produces, the offset-guard regression writeup, the sandboxing pattern to port,
+and the corpus-extraction procedure for §3.
