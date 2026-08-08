@@ -276,11 +276,10 @@ impl PatchRefiner {
     }
 
     fn resolve_mode(req: &RefinementRequest) -> ApplicationMode {
-        if let Some(cfg) = &req.config {
-            if let Some(override_mode) = &cfg.mode_override {
+        if let Some(cfg) = &req.config
+            && let Some(override_mode) = &cfg.mode_override {
                 return override_mode.clone();
             }
-        }
         let perfects = req.perfect_patches.as_deref().unwrap_or(&[]);
         match perfects.len() {
             0 => ApplicationMode::Mode3,
@@ -378,7 +377,7 @@ impl PatchRefiner {
             let closed_cleanly = change[0].section.is_empty() && change[1].section.is_empty();
             let score = hypothesis_score(closed_cleanly, expected, unexpected);
 
-            if best.map_or(true, |b| score > b) {
+            if best.is_none_or(|b| score > b) {
                 best = Some(score);
                 dist = *v;
                 let token1 = change[0].run[*i].record.clone();
@@ -479,7 +478,7 @@ impl PatchRefiner {
 
                 if best_deviation
                     .as_ref()
-                    .map_or(true, |d| distance < d.distance_score)
+                    .is_none_or(|d| distance < d.distance_score)
                 {
                     best_deviation = Some(Deviation {
                         candidate_id: candidate.id.clone(),
@@ -520,8 +519,8 @@ impl PatchRefiner {
             vec![Box::new(CompileChecker), Box::new(TestChecker)];
 
         for candidate in candidates {
-            if let Ok(patch) = Patch::from_str(&candidate.diff_content) {
-                if let Ok(ai_result) = apply(original, &patch) {
+            if let Ok(patch) = Patch::from_str(&candidate.diff_content)
+                && let Ok(ai_result) = apply(original, &patch) {
                     let mut all_ok = true;
 
                     for checker in &checkers {
@@ -545,7 +544,6 @@ impl PatchRefiner {
                         };
                     }
                 }
-            }
         }
 
         RefinementResponse {
