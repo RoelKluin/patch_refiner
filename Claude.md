@@ -21,9 +21,10 @@ AI Patch-Refinement Module for APR (Automated Program Repair). Rust CLI/library 
 This is a hand-written state machine over `prettydiff::diff_words` tokens, tracking Rust lexical context (`//`, `/*...*/`, `"..."`, `r#"..."#`-style raw strings with arbitrary hash counts) so that a one-word change inside a comment scores differently from the same change in code. It is intentionally more complex than it looks; do not simplify without re-running the full test suite.
 
 **Non-obvious invariants:**
-- Multi-character markers (`//`, `/*`, `*/`, and quote+hash sequences) can arrive as separate single-char diff tokens. `handle_part`/`handle_first_part` buffer symbolic tokens until a marker is confirmed or ruled out — do not shortcut this by matching partial candidates via `starts_with` against both open *and* close text indiscriminately; that reintroduces premature commits (see git history for the `"###`-string regression).
+
+- Multi-character markers (`//`, `/*`, `*/`, and quote+hash sequences) can arrive as separate single-char diff tokens. `handle_part`/`handle_first_part` buffer symbolic tokens until a marker is confirmed or ruled out — do not shortcut this by matching partial candidates via `starts_with` against both open _and_ close text indiscriminately; that reintroduces premature commits (see git history for the `"###`-string regression).
 - A bare `"` while `section == "\""` must resolve immediately (empty string literals, e.g. `""`, must close cleanly) — this is the one section that must never buffer.
-- Ambiguous/unresolved markers are recorded as alternate `Run` hypotheses and retried; when pushing a new `Run`, dedup against the *stored* (possibly reversed) representation, not the raw token — mismatched dedup keys cause duplicate hypotheses and combinatorial blowup in `compute_distance`'s search loop.
+- Ambiguous/unresolved markers are recorded as alternate `Run` hypotheses and retried; when pushing a new `Run`, dedup against the _stored_ (possibly reversed) representation, not the raw token — mismatched dedup keys cause duplicate hypotheses and combinatorial blowup in `compute_distance`'s search loop.
 - `compute_distance` iterates `(i, j)` pairs over both sides' hypothesis lists to a fixed point; there is no other loop guard. Any change here should be tested against `runaway_strings_in_diff`-style inputs (deliberately ambiguous strings/comments) to confirm termination, not just correctness.
 
 ## Gotchas
@@ -31,3 +32,4 @@ This is a hand-written state machine over `prettydiff::diff_words` tokens, track
 - `diffy::Patch::from_str` expects unified diff format; malformed candidate diffs should produce a `Diagnostic` (category `PatchParse`), not a panic.
 - Subprocess checkers must respect `SemanticChecksConfig.timeout_secs`; don't add a checker that can hang indefinitely.
 - No test corpus/fixtures directory yet — inline fixtures in `#[cfg(test)]` modules are the current convention.
+
