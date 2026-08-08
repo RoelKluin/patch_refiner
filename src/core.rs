@@ -1,7 +1,7 @@
 use crate::checkers::{CompileChecker, SemanticChecker, TestChecker};
 use crate::models::*;
-use anyhow::{anyhow, Result};
-use diffy::{apply, Patch};
+use anyhow::{Result, anyhow};
+use diffy::{Patch, apply};
 use prettydiff::text::InlineChangeset;
 use std::collections::HashMap;
 
@@ -277,9 +277,10 @@ impl PatchRefiner {
 
     fn resolve_mode(req: &RefinementRequest) -> ApplicationMode {
         if let Some(cfg) = &req.config
-            && let Some(override_mode) = &cfg.mode_override {
-                return override_mode.clone();
-            }
+            && let Some(override_mode) = &cfg.mode_override
+        {
+            return override_mode.clone();
+        }
         let perfects = req.perfect_patches.as_deref().unwrap_or(&[]);
         match perfects.len() {
             0 => ApplicationMode::Mode3,
@@ -384,7 +385,8 @@ impl PatchRefiner {
                 let token2 = change[1].run[*j].record.clone();
                 best_str = format!(
                     "[patch:{i}] '{token1}' clean={} [patch:{j}] '{token2}' clean={} (exp={expected}, unexp={unexpected})",
-                    change[0].section.is_empty(), change[1].section.is_empty()
+                    change[0].section.is_empty(),
+                    change[1].section.is_empty()
                 );
                 if 3 * unexpected > unexpected + expected {
                     best_str += &format!("\n{}", changeset.format());
@@ -520,30 +522,31 @@ impl PatchRefiner {
 
         for candidate in candidates {
             if let Ok(patch) = Patch::from_str(&candidate.diff_content)
-                && let Ok(ai_result) = apply(original, &patch) {
-                    let mut all_ok = true;
+                && let Ok(ai_result) = apply(original, &patch)
+            {
+                let mut all_ok = true;
 
-                    for checker in &checkers {
-                        let diags = checker.check(original, &ai_result, &config.semantic_checks);
-                        if diags.iter().any(|d| d.level == DiagnosticLevel::Error) {
-                            all_ok = false;
-                        }
-                        diagnostics.extend(diags);
+                for checker in &checkers {
+                    let diags = checker.check(original, &ai_result, &config.semantic_checks);
+                    if diags.iter().any(|d| d.level == DiagnosticLevel::Error) {
+                        all_ok = false;
                     }
-
-                    if all_ok {
-                        return RefinementResponse {
-                            schema_version: crate::models::SCHEMA_VERSION.to_string(),
-                            mode: ApplicationMode::Mode3,
-                            decision: Decision::Approved,
-                            selected_patch_id: Some(candidate.id.clone()),
-                            matched_perfect_patch_id: None,
-                            deviations: None,
-                            reasoning: None,
-                            diagnostics,
-                        };
-                    }
+                    diagnostics.extend(diags);
                 }
+
+                if all_ok {
+                    return RefinementResponse {
+                        schema_version: crate::models::SCHEMA_VERSION.to_string(),
+                        mode: ApplicationMode::Mode3,
+                        decision: Decision::Approved,
+                        selected_patch_id: Some(candidate.id.clone()),
+                        matched_perfect_patch_id: None,
+                        deviations: None,
+                        reasoning: None,
+                        diagnostics,
+                    };
+                }
+            }
         }
 
         RefinementResponse {

@@ -35,10 +35,10 @@ pub struct SemanticChecksConfig {
 }
 impl SemanticChecksConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(timeout) = self.timeout_secs {
-            if timeout == 0 {
-                return Err("timeout_secs must be > 0".to_string());
-            }
+        if let Some(timeout) = self.timeout_secs
+            && timeout == 0
+        {
+            return Err("timeout_secs must be > 0".to_string());
         }
         if self.run_compile_check && self.compile_command.is_none() {
             return Err("run_compile_check=true requires compile_command".to_string());
