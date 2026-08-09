@@ -55,12 +55,15 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow!("Failed to parse JSON request:\n{e}"))?;
 
     let mut config = request.config.unwrap_or_default();
+
     if let Some(v) = cli.compile_check {
         config.semantic_checks.run_compile_check = v;
     }
+
     if let Some(v) = cli.test_check {
         config.semantic_checks.run_tests = v;
     }
+
     if let Some(v) = cli.ignore_whitespace {
         config.whitespace.ignore_whitespace = v;
     }
@@ -87,16 +90,6 @@ fn main() -> Result<()> {
             "mode4" => ApplicationMode::Mode4,
             other => anyhow::bail!("invalid --mode value: {other}"),
         });
-    }
-
-    if cli.compile_check {
-        config.semantic_checks.run_compile_check = true;
-    }
-    if cli.test_check {
-        config.semantic_checks.run_tests = true;
-    }
-    if cli.ignore_whitespace {
-        config.whitespace.ignore_whitespace = true;
     }
 
     request.config = Some(config);
