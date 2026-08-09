@@ -48,7 +48,6 @@ fn main() -> Result<()> {
             buf
         }
     };
-
     // FIXME: what to do with these linters?
     let _default_commands = default_commands(cli.language.as_deref().unwrap_or(""));
 
@@ -56,6 +55,20 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow!("Failed to parse JSON request:\n{e}"))?;
 
     let mut config = request.config.unwrap_or_default();
+
+    let effective_lang = cli
+        .language
+        .as_deref()
+        .or(config.language.as_deref())
+        .unwrap_or("");
+    let (default_compile, default_test) = default_commands(effective_lang);
+    if config.semantic_checks.run_compile_check && config.semantic_checks.compile_command.is_none()
+    {
+        config.semantic_checks.compile_command = Some(default_compile);
+    }
+    if config.semantic_checks.run_tests && config.semantic_checks.test_command.is_none() {
+        config.semantic_checks.test_command = Some(default_test);
+    }
 
     if let Some(m) = cli.mode {
         config.mode_override = Some(match m.to_lowercase().as_str() {
