@@ -116,7 +116,6 @@ impl ChangeSet {
         if self.buffer.is_empty() {
             return 0.0;
         }
-        eprintln!("flushing buffer: {}", self.buffer);
         let leftover = std::mem::take(&mut self.buffer);
         self.handle_part_inner(&leftover, cfg)
     }
@@ -373,7 +372,6 @@ impl PatchRefiner {
             compared.insert(key, dist);
         }
         let mut best: Option<(bool, f64)> = None;
-        let mut best_str = "No best".to_string();
         dist = f64::NAN;
 
         for ((i, j), v) in compared.iter() {
@@ -390,19 +388,8 @@ impl PatchRefiner {
             if best.is_none_or(|b| score > b) {
                 best = Some(score);
                 dist = *v;
-                let token1 = change[0].run[*i].record.clone();
-                let token2 = change[1].run[*j].record.clone();
-                best_str = format!(
-                    "[patch:{i}] '{token1}' clean={} [patch:{j}] '{token2}' clean={} (exp={expected}, unexp={unexpected})",
-                    change[0].section.is_empty(),
-                    change[1].section.is_empty()
-                );
-                if 3 * unexpected > unexpected + expected {
-                    best_str += &format!("\n{}", changeset.format());
-                }
             }
         }
-        println!("{} {dist}", best_str);
         dist
     }
 
