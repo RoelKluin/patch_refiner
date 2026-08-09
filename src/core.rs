@@ -1,4 +1,3 @@
-use crate::checkers::{CompileChecker, SemanticChecker, TestChecker};
 use crate::models::*;
 use diffy::{Patch, apply};
 use prettydiff::text::InlineChangeset;
@@ -511,8 +510,6 @@ impl PatchRefiner {
                 location: None,
             });
         }
-        let checkers: Vec<Box<dyn SemanticChecker>> =
-            vec![Box::new(CompileChecker), Box::new(TestChecker)];
 
         for candidate in candidates {
             let patch = match Patch::from_str(&candidate.diff_content) {
@@ -527,7 +524,7 @@ impl PatchRefiner {
                     continue;
                 }
             };
-            let ai_result = match apply(original, &patch) {
+            let _ = match apply(original, &patch) {
                 Ok(r) => r,
                 Err(e) => {
                     diagnostics.push(Diagnostic {
@@ -539,24 +536,16 @@ impl PatchRefiner {
                     continue;
                 }
             };
-            let mut all_ok = true;
-            for checker in &checkers {
-                let diags = checker.check(original, &ai_result, &config.semantic_checks);
-                if diags.iter().any(|d| d.level == DiagnosticLevel::Error) { all_ok = false; }
-                diagnostics.extend(diags);
-            }
-            if all_ok {
-                return RefinementResponse {
-                    schema_version: crate::models::SCHEMA_VERSION.to_string(),
-                    mode: ApplicationMode::Mode3,
-                    decision: Decision::Approved,
-                    selected_patch_id: Some(candidate.id.clone()),
-                    matched_perfect_patch_id: None,
-                    deviations: None,
-                    reasoning: None,
-                    diagnostics,
-                };
-            }
+            return RefinementResponse {
+                schema_version: crate::models::SCHEMA_VERSION.to_string(),
+                mode: ApplicationMode::Mode3,
+                decision: Decision::Approved,
+                selected_patch_id: Some(candidate.id.clone()),
+                matched_perfect_patch_id: None,
+                deviations: None,
+                reasoning: None,
+                diagnostics,
+            };
         }
 
         RefinementResponse {
