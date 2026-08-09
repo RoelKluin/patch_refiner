@@ -16,12 +16,6 @@ struct Cli {
     mode: Option<String>,
 
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    compile_check: Option<bool>,
-
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    test_check: Option<bool>,
-
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     ignore_whitespace: Option<bool>,
 
     #[arg(long)]
@@ -52,14 +46,6 @@ fn main() -> Result<()> {
     let mut request: RefinementRequest = serde_json::from_str(&input_data)?;
 
     let mut config = request.config.unwrap_or_default();
-
-    if let Some(v) = cli.compile_check {
-        config.semantic_checks.run_compile_check = v;
-    }
-
-    if let Some(v) = cli.test_check {
-        config.semantic_checks.run_tests = v;
-    }
 
     if let Some(v) = cli.ignore_whitespace {
         config.whitespace.ignore_whitespace = v;
