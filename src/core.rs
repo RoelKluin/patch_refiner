@@ -530,31 +530,47 @@ impl PatchRefiner {
             vec![Box::new(CompileChecker), Box::new(TestChecker)];
 
         for candidate in candidates {
-            if let Ok(patch) = Patch::from_str(&candidate.diff_content)
-                && let Ok(ai_result) = apply(original, &patch)
-            {
-                let mut all_ok = true;
-
-                for checker in &checkers {
-                    let diags = checker.check(original, &ai_result, &config.semantic_checks);
-                    if diags.iter().any(|d| d.level == DiagnosticLevel::Error) {
-                        all_ok = false;
-                    }
-                    diagnostics.extend(diags);
+            let patch = match Patch::from_str(&candidate.diff_content) {
+                Ok(p) => p,
+                Err(e) => {
+                    diagnostics.push(Diagnostic {
+                        level: DiagnosticLevel::Error,
+                        category: DiagnosticCategory::PatchParse,
+                        message: format!("Candidate {} invalid: {e}", candidate.id),
+                        location: None,
+                    });
+                    continue;
                 }
-
-                if all_ok {
-                    return RefinementResponse {
-                        schema_version: crate::models::SCHEMA_VERSION.to_string(),
-                        mode: ApplicationMode::Mode3,
-                        decision: Decision::Approved,
-                        selected_patch_id: Some(candidate.id.clone()),
-                        matched_perfect_patch_id: None,
-                        deviations: None,
-                        reasoning: None,
-                        diagnostics,
-                    };
+            };
+            let ai_result = match apply(original, &patch) {
+                Ok(r) => r,
+                Err(e) => {
+                    diagnostics.push(Diagnostic {
+                        level: DiagnosticLevel::Error,
+                        category: DiagnosticCategory::PatchApply,
+                        message: format!("Candidate {} apply failed: {e}", candidate.id),
+                        location: None,
+                    });
+                    continue;
                 }
+            };
+            let mut all_ok = true;
+            for checker in &checkers {
+                let diags = checker.check(original, &ai_result, &config.semantic_checks);
+                if diags.iter().any(|d| d.level == DiagnosticLevel::Error) { all_ok = false; }
+                diagnostics.extend(diags);
+            }
+            if all_ok {
+                return RefinementResponse {
+                    schema_version: crate::models::SCHEMA_VERSION.to_string(),
+                    mode: ApplicationMode::Mode3,
+                    decision: Decision::Approved,
+                    selected_patch_id: Some(candidate.id.clone()),
+                    matched_perfect_patch_id: None,
+                    deviations: None,
+                    reasoning: None,
+                    diagnostics,
+                };
             }
         }
 
