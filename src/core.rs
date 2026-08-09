@@ -333,7 +333,7 @@ impl PatchRefiner {
                     Insert(parts) if side == 1 => parts.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
                     Replace(p1, _) if side == 0 => p1.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
                     Replace(_, p2) if side == 1 => p2.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
-                    Equal(parts) => parts.iter().for_each(|p| { dist += cs.handle_part(p, cfg); }),
+                    Equal(parts) => parts.iter().for_each(|p| { let _ = cs.handle_part(p, cfg); }),
                     _ => {}
                 }
             }
