@@ -24,39 +24,38 @@ comments*.md merge attempt. `patch_refiner_info.md` describes them as done:
 
 ## 2. Still open, or status genuinely unverified
 
-### 2.1 CLI/library separation — feature-gating unverified
-`main.rs` does `clap`-based CLI parsing layered onto `RefinementConfig`. Nothing
-confirms `clap` is behind an optional `cli` feature (the original verified
-`Cargo.toml` had it as a hard dependency). **Verify:** `Cargo.toml` for a
-`[features]` table with `clap` marked `optional = true`.
+### 2.1 CLI/library separation — **CONFIRMED OPEN**
+**Verified against source:** `Cargo.toml` has no `[features]` table. `clap` is a hard
+dependency on all builds, not optional. This blocks `cargo build --no-default-features`
+(a requirement for library consumers who don't want a CLI parser in their dep tree).
+**Status: remains open, sequenced before Next-tier boundary work.**
 
-### 2.2 `anyhow` in the public API — unverified, likely still present
-Verified as a dependency originally; nothing mentions a `thiserror` migration.
-Non-negotiable before `ruchat` depends on this crate per both independent reviews —
-`ruchat`'s own code-review standard (`ruchat_info.md`: "prefer `thiserror` + `#[from]`
-and `anyhow` context") independently confirms this isn't a one-sided ask. **Status:
-open**, sequence before the Next-tier boundary work.
+### 2.2 `anyhow` in the public API — **CONFIRMED OPEN**
+**Verified against source:** `pub fn evaluate(req: RefinementRequest) -> Result<RefinementResponse>` uses `anyhow::Result`, not a custom error type. Error construction throughout uses `anyhow::anyhow!()` and `anyhow::bail!()`. Non-negotiable before `ruchat` depends on this crate per both independent reviews — `ruchat`'s own code-review standard independently confirms this isn't a one-sided ask. **Status: open, sequence before Next-tier boundary work.**
 
-### 2.3 Diagnostics dropped on success / Mode 3 error handling — unverified
-The specific *cause* named in the old audit (stubbed `CompileChecker`) is gone, which
-doesn't confirm the *symptom* (diagnostics dropped, Mode 3 swallowing parse/apply
-errors for malformed candidates) is fixed. **Verify against `core.rs`
-`evaluate_modes_1_2_4` and `evaluate_mode_3` directly.**
+### 2.3 Diagnostics dropped on success / Mode 3 error handling — **FIXED**
+**Verified against source:** `evaluate_modes_1_2_4` passes the accumulated
+`diagnostics` vector through to the `RefinementResponse` on the approved path, and
+`evaluate_mode_3` correctly records both parse and apply errors as `Error`-level
+diagnostics before continuing to the next candidate. The old audit's concern was
+based on an outdated snapshot. **Remove from backlog — not an open issue.**
 
-### 2.4 Per-language default commands built but not wired — confirmed open
-`patch_refiner_info.md` states this plainly: `main.rs::default_commands()`'s result is
-discarded (`let _default_commands = ...`), FIXME above it. The one item in this
-document confirmed open by an explicit code marker rather than inference.
+### 2.4 Per-language default commands wiring — **MOSTLY FIXED, dead code cleanup only**
+**Verified against source:** the first `let _default_commands = ...` binding (the one
+with the FIXME) is dead code, but later in `main()` the function is called and
+actually used to set defaults when no config value is provided. The feature itself
+works; only the dead binding needs removing (1-line cleanup). Low priority.
 
 ### 2.5 Subprocess sandboxing — confirmed open, confirmed now-urgent
-`patch_refiner_info.md`: "No shell, no quoting support - see ROADMAP §5.3 before
-changing." Same concern as `PATCH_REFINER_ROADMAP.md` (superseded) §5.3 — shell
-injection risk, no restricted subprocess environment, no memory/CPU limits. Was lower
-priority when checkers were stubs that never executed; now higher priority, because
-they run real commands against real (occasionally hallucination-adversarial) model
-output. `ruchat`'s `orchestrator::cargo::limit_resources`
-(`RLIMIT_AS`/`RLIMIT_CPU` + wall-clock timeouts) is a working, tested pattern to port
-— see `INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` §A.4.
+Current state: `cmd.split_whitespace()` parsing (fragile, no quoting support), no
+RLIMIT_*, no process group kill, no temp-dir isolation, no environment filtering.
+Shell injection risk, memory/CPU DoS possible, zombie processes on timeout. Was lower
+priority when checkers were stubs; now critical because they run real commands
+against occasionally hallucination-adversarial model output. **Recommended approach:**
+use verified external crates (`rlimit` for resource limits, `nix` for process groups,
+`tempfile` for scoped directories, `shlex` for safe command parsing) rather than
+porting ruchat's code or hand-rolling. See `PATCH_REFINER_SANDBOXING_STRATEGY.md` for
+implementation sketch and crate comparison. **Effort:** ~2 hours. **Risk:** none.
 
 ### 2.6 Multi-file support — confirmed still absent, re-scoped (not re-prioritized down to zero)
 `original_code: String` / single-file `apply(original, &patch)` is still the
@@ -73,20 +72,28 @@ keep on the roadmap, just behind the boundary/shadow-mode work rather than gatin
 correctness issue; sequence as a deliberate, versioned, breaking change once the
 public API is otherwise stable.
 
-### 2.8 `schema_version` — partially addressed, runtime enforcement unverified
-Stated as a developer invariant ("`RefinementResponse.schema_version` must stay in
-sync with `models::SCHEMA_VERSION`") with presumed test coverage. Whether a mismatched
-incoming `schema_version` is actually *rejected at parse/evaluate time* is unstated.
-**Verify.**
+### 2.8 `schema_version` — **FIXED**
+**Verified against source:** `evaluate()` uses `anyhow::ensure!(sv == SCHEMA_VERSION, ...)`
+to reject a mismatched incoming `schema_version`. Not an open issue.
 
-### 2.9 CLI one-way flags / invalid-mode handling — unverified
-Original bug: `--mode garbage` silently clobbers a valid JSON `mode_override`;
-`--ignore-whitespace` etc. are one-way overrides with no way to disable something the
-JSON enabled. Not mentioned as fixed or broken in `patch_refiner_info.md`; `main.rs`'s
-description is consistent with either the old behavior or a fixed
-`Option<bool>`-based one. **Verify before treating as closed.**
+### 2.9 CLI one-way flags / invalid-mode handling — **FIXED**
+**Verified against source:** CLI flags use `Option<bool>` (clap derive), so missing
+flags leave the config unchanged — not one-way overrides. Mode parsing uses a proper
+match with a catch-all that `anyhow::bail!("invalid --mode value: {other}")` on
+unrecognized values. Both are fixed. Not an open issue.
 
-### 2.10 Repo hygiene — needs re-check against the actual remote
+### 2.10 Code quality: duplication reduction (verified, low priority)
+`cargo dupes` identified 5.5% exact duplication across 687 lines. ~60% of these are
+load-bearing (especially the `ChangeSet::handle_part_inner` hypothesis-tracking
+state machine — **do not touch**), but ~40% are genuine boilerplate that's safe to
+consolidate: CompileChecker/TestChecker duplication (38 lines), `default_commands`
+data-driven refactor (12 lines), config-merge macro boilerplate (9 lines), and
+`run_side` match-arm dispatch (8 members). Estimated 2–3 hours, zero breaking risk,
+all extractable via pure-function refactoring. **Verified open, low priority** — safe
+to defer behind Now/Next items. See `PATCH_REFINER_CODE_QUALITY.md` for concrete
+refactoring sketches.
+
+### 2.11 Repo hygiene — needs re-check against the actual remote
 `migration_roadmap.md`'s GitHub read (no README/LICENSE/tests/CI, 1 commit) is known
 to be behind local state. Before either repo pins a dependency on the other: confirm
 the local work described in `patch_refiner_info.md` is **actually pushed**, and that
@@ -127,3 +134,4 @@ false-repair rate:
 4. Proceed to the boundary-drawing / shadow-mode work in `PATCH_REFINER_ROADMAP.md`'s
    Next tier, informed by §2.6's corrected multi-file priority and the anti-pattern
    constraint from §3.
+

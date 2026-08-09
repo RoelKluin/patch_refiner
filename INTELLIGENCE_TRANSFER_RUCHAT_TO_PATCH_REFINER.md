@@ -51,12 +51,16 @@ diff-based patching and reverted the same day — real runs showed no improvemen
 application strategy to unified diffs, this has already been tried once against real
 traffic and didn't help. Worth citing, not repeating.
 
-### A.4 A reusable sandboxing pattern
-`orchestrator::cargo::limit_resources` (ruchat) applies `RLIMIT_AS`/`RLIMIT_CPU` to
-every cargo subprocess it spawns, alongside wall-clock timeouts. patch_refiner's
-`checkers.rs` currently has no shell/quoting/sandboxing story (`patch_refiner_info.md`
-flags this explicitly). This is a working, tested implementation to port or copy
-rather than a design problem to solve from scratch.
+### A.4 Subprocess sandboxing: use verified external crates, not home-grown code
+Both ruchat and patch_refiner need subprocess sandboxing. The Rust ecosystem has
+audited, battle-tested crates for this (`rlimit`, `nix`, `tempfile`, `shlex`) that
+are better than home-rolling or porting ruchat's pattern. Whether ruchat's own
+`orchestrator::cargo::limit_resources` is already using these crates or is
+hand-rolled, patch_refiner should adopt the external-crate stack as the preferred
+approach for both projects. See `PATCH_REFINER_SANDBOXING_STRATEGY.md` for the full
+implementation sketch, crate comparison, and effort estimates. This is a process
+isolation concern that shouldn't vary between projects — standardize on the
+ecosystem solution.
 
 ### A.5 ruchat's own trace/lessons infrastructure is directly reusable as the corpus source
 This is not a coincidence worth losing: `RUCHAT_ORCHESTRATION.md` describes ruchat as
