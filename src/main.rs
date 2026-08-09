@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use std::fs;
 use std::io::{self, Read};
@@ -58,13 +58,13 @@ fn main() -> Result<()> {
     let mut config = request.config.unwrap_or_default();
 
     if let Some(m) = cli.mode {
-        config.mode_override = match m.to_lowercase().as_str() {
-            "mode1" => Some(ApplicationMode::Mode1),
-            "mode2" => Some(ApplicationMode::Mode2),
-            "mode3" => Some(ApplicationMode::Mode3),
-            "mode4" => Some(ApplicationMode::Mode4),
-            _ => None,
-        };
+        config.mode_override = Some(match m.to_lowercase().as_str() {
+            "mode1" => ApplicationMode::Mode1,
+            "mode2" => ApplicationMode::Mode2,
+            "mode3" => ApplicationMode::Mode3,
+            "mode4" => ApplicationMode::Mode4,
+            other => anyhow::bail!("invalid --mode value: {other}"),
+        });
     }
 
     if cli.compile_check {
