@@ -223,7 +223,6 @@ impl ChangeSet {
 
     fn handle_part(&mut self, part: &str, cfg: &LanguageWeights) -> f64 {
         debug_assert!(!part.is_empty());
-        debug_assert!(part.is_ascii());
         match (self.buffer.as_str(), part) {
             ("", part) => self.handle_first_part(part, cfg),
             // complete ones
