@@ -438,7 +438,7 @@ impl PatchRefiner {
                 }
                 let changeset = prettydiff::diff_words(&ai_result, &p_result);
                 let deviation_str = changeset.format();
-                let distance = Self::compute_distance(&changeset, &lang_weights);
+                let distance = Self::compute_distance(&changeset, lang_weights);
 
                 if best_deviation
                     .as_ref()
