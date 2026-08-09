@@ -11,22 +11,30 @@ evidence, and exactly what still needs verifying against the real source tree).
 
 ## Vision
 
-A dependable, sandboxed, library-first Rust crate that evaluates and refines
-AI-generated patch candidates for automated-program-repair pipelines — usable
-standalone and as a `ruchat` dependency, without either consumer's version
-constraints or CLI dependencies leaking into the other.
+A dependable, library-first Rust crate that validates AI-generated patch candidates syntactically (parse and apply) for automated-program-repair pipelines — usable standalone and as a `ruchat` dependency, without either consumer's constraints leaking into the other.
+
+**Semantic validation (compile, test, lint) is intentionally out of scope** and delegated to the calling system (`ruchat`), which implements a unified subprocess-sandboxing layer. This avoids duplicating complex isolation infrastructure.
 
 ## Assumptions — read this before trusting any status below
+
+- **Architectural decision (confirmed, not just a roadmap item):** Subprocess
+  sandboxing is implemented once, in `ruchat`, using verified external crates
+  (`rlimit`, `nix`, `tempfile`, `shlex`). patch_refiner does not execute
+  compile/test commands and has no sandboxing surface. See CLAUDE.md for the
+  rationale. This means `SemanticChecksConfig` (config fields for compile/test)
+  is currently accepted but ignored by the evaluator.
 
 - **This roadmap is built from two CLAUDE.md-style summaries and a README, not a
   source read.** Every "confirmed resolved" claim in the backlog file is inference
   from documentation, not verification. Where the two available documents disagree
   or are silent, the backlog file says so explicitly.
+
 - **The GitHub snapshot earlier roadmap drafts read (`migration_roadmap.md`) is
   known-stale** — 1 commit, no `[lib]`, no README/tests/CI — and contradicted by
   `patch_refiner_info.md`, which describes a working `src/lib.rs`, implemented
   checkers, and local docs. This is the confirmed "missing local commits" scenario:
   push the current local state before planning further against it.
+
 - **`ruchat` does not need multi-file diff support from this crate.** Confirmed via
   current `ruchat` intelligence (see `RUCHAT_ROADMAP_BACKLOG.md` §2): it sends
   sequential single-file patches, not multi-file diffs. This re-scopes multi-file
@@ -34,33 +42,43 @@ constraints or CLI dependencies leaking into the other.
 
 ## Decisions pending maintainer sign-off / verification
 
-- Whether `clap`/CLI dependencies are actually feature-gated yet (Cargo.toml has to be
-  read; documentation doesn't say).
-- Whether `anyhow` is still in the public API, or already replaced.
-- Whether Mode 3's error handling and the approved-path diagnostics bug (both flagged
-  by the earlier independent code audit) are still present — the *cause* originally
-  named (a stubbed `CompileChecker`) is gone, which doesn't by itself confirm the
-  *symptom* is gone.
+- Whether Mode 3's apply-failure diagnostics should include the real current file
+  content (per `ruchat`'s ~4000-char precedent in the intelligence-transfer doc),
+  rather than a bare diffy error string.
+- Whether to remove `SemanticChecksConfig` fields from the schema (breaking change,
+  cleaner), or keep them as pass-through metadata (stable, but potentially
+  misleading). See ROADMAP_BACKLOG.md §2 for the full trade-off.
 
 ---
 
 ## Now
 
-**Theme: close three critical items blocking the Next-tier boundary work.**
+**Theme: repair logic for syntactic validation, and integration housekeeping.**
 
-1. **Subprocess sandboxing** (critical) — currently no RLIMIT_*, no process group kill,
-   no temp-dir isolation. This is a DoS vector once real model output reaches the
-   checkers. Implement using verified external crates (`rlimit`, `nix`, `tempfile`,
-   `shlex`) rather than hand-rolling. See `PATCH_REFINER_SANDBOXING_STRATEGY.md` for
-   the full implementation sketch and comparison with home-grown approaches. **Effort:**
-   ~2 hours. **Risk:** none — pure addition.
+1. **Apply-failure diagnostics should include real file content** (high-value, Mode 3) —
+   when a hunk doesn't match, patch_refiner currently returns a bare diffy error
+   (e.g., "hunk 1 does not match"). Integrate the real current file content at the
+   apply-failure point (capped at ~4000 chars, per ruchat precedent) into the
+   diagnostic message. This is the single highest-leverage Mode 3 improvement — it
+   lets a calling system (or a human reviewing the diagnostic) understand why the
+   apply failed without re-reading the original code. Evidence: `INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` §A.1 identifies this as a documented improvement from ruchat's own tool traces.
+   **Effort:** ~1 hour. **Risk:** none — pure diagnostic enhancement.
 
-2. **Feature-gate clap** (blocking library consumers) — no `[features]` table; clap is
-   a hard dependency. Blocks `cargo build --no-default-features`. **Effort:** ~30
-   minutes.
+2. **Repair logic for common diff malformations** (Mode 3 robustness) — ruchat's
+   experience shows AI-generated diffs consistently omit leading spaces on
+   context lines and get `@@` hunk-header line counts wrong. Implement pre-parse
+   repairs (before `diffy::Patch::from_str`) to fix these, rather than rejecting
+   otherwise-correct diffs. This is Mode 3's core value proposition.
+   See `INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` §A.1 for the pathologies
+   and §B.1 for where to find ruchat's working implementations to port.
+   **Effort:** ~2 hours (porting + testing against corpus cases). **Risk:** low —
+   repairs must be conservative (don't change semantics), tested via corpus.
 
-3. **Replace anyhow with thiserror** (blocking ruchat integration) — callers need
-   structured error matching, not string-based anyhow errors. **Effort:** ~2 hours.
+3. **Document the anti-pattern: never reject based on model-written `@@` offsets**
+   (architectural invariant, CLAUDE.md/ROADMAP housekeeping) — add this as a
+   stated design invariant in code comments and docs, not just in the roadmap.
+   See `INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` §A.2 for the bug history.
+   **Effort:** ~30 minutes. **Risk:** none — documentation only.
 
 All three are unblocked and independent; parallelize if possible.
 
@@ -69,17 +87,17 @@ All three are unblocked and independent; parallelize if possible.
 **Theme: boundary + shadow mode with `ruchat`,** contingent on the Now theme being
 closed. Both independent reviews of this crate (the code audit and the integration
 review) converge on the same shape closely enough that it doesn't need re-deriving
-here: draw a `refine`/`apply`-style boundary (structured facts out, no `diffy`/`anyhow`
-types across the public API), add it as a path dependency, run it alongside `ruchat`'s
-existing patch-validation logic without letting it decide anything, and log every
-divergence.
+here: patch_refiner is now clearly scoped to syntactic validation (parse + apply),
+and `ruchat` handles the semantic boundary. Add it as a path dependency, run it
+alongside `ruchat`'s existing patch-validation logic without letting it decide
+anything, and log every divergence.
 
 - **Milestone:** shadow mode run against ≥50 real patch attempts spanning ≥3 models,
   zero unexplained divergence, and every "both accepted, different output" case at
   zero. This is the actual release gate — not a date.
-- Repair logic must not derive rejections from model-written `@@` hunk offsets (a
-  documented `ruchat` regression — see the intelligence-transfer file). State this as
-  a tested invariant in this crate's own docs, not just as inherited tribal knowledge.
+- Integration point: patch_refiner's `Decision::Approved` in Mode 3 should map to
+  ruchat's "safe syntactic precondition; proceed to semantic checks." Confirm this
+  boundary is clear, testable, and doesn't regress.
 
 ## Later (deferred by design, not urgent)
 
@@ -93,13 +111,15 @@ divergence.
   breaking API change best done once the public API is otherwise stable.
 - Corpus-driven testing (`tests/corpus/`) sourced from `ruchat`'s own failure traces —
   see the intelligence-transfer file for exactly where to pull this from.
+- `SemanticChecksConfig` removal or formalization — depends on the pending decision
+  (see Decisions section).
 
 ---
 
 ## Dependencies
 
 - Next depends on Now being closed — don't add `ruchat` as a shadow-mode dependency
-  while checker sandboxing is unresolved.
+  until the repair logic and anti-pattern documentation are in place.
 - Next also depends on `ruchat` actually producing the intelligence described in
   `INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md` (a corpus of real failure traces,
   the anti-pattern list) — that work happens on the `ruchat` side, not here.

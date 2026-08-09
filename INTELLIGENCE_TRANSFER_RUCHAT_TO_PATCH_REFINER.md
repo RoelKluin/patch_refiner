@@ -51,16 +51,22 @@ diff-based patching and reverted the same day — real runs showed no improvemen
 application strategy to unified diffs, this has already been tried once against real
 traffic and didn't help. Worth citing, not repeating.
 
-### A.4 Subprocess sandboxing: use verified external crates, not home-grown code
-Both ruchat and patch_refiner need subprocess sandboxing. The Rust ecosystem has
-audited, battle-tested crates for this (`rlimit`, `nix`, `tempfile`, `shlex`) that
-are better than home-rolling or porting ruchat's pattern. Whether ruchat's own
-`orchestrator::cargo::limit_resources` is already using these crates or is
-hand-rolled, patch_refiner should adopt the external-crate stack as the preferred
-approach for both projects. See `PATCH_REFINER_SANDBOXING_STRATEGY.md` for the full
-implementation sketch, crate comparison, and effort estimates. This is a process
-isolation concern that shouldn't vary between projects — standardize on the
-ecosystem solution.
+### A.4 Subprocess sandboxing: use verified external crates, not home-grown code — ruchat-only
+Both ruchat and patch_refiner originally planned to implement subprocess
+sandboxing independently. The Rust ecosystem has audited, battle-tested crates for
+this (`rlimit`, `nix`, `tempfile`, `shlex`) that are better than home-rolling or
+porting ruchat's pattern.
+
+**Decision (now confirmed):** Sandboxing lives only in `ruchat`. patch_refiner does
+not execute compile/test/lint subprocesses and has no sandboxing surface at all.
+This avoids duplicating complex isolation logic (resource limits, temp-dir cleanup,
+process-group kill semantics) across two repos. patch_refiner's entire responsibility
+is syntactic validation (parse + apply); `ruchat` handles all semantic execution and
+sandboxing.
+
+**Implication:** The external-crate stack (`rlimit`, `nix`, `tempfile`, `shlex`) is
+ruchat-scoped guidance only, not a patch_refiner dependency or task. See
+`PATCH_REFINER_ROADMAP.md` Assumptions for this architectural decision.
 
 ### A.5 ruchat's own trace/lessons infrastructure is directly reusable as the corpus source
 This is not a coincidence worth losing: `RUCHAT_ORCHESTRATION.md` describes ruchat as
@@ -120,8 +126,8 @@ positive example):
      original.txt
      expected.json     # the RefinementResponse you'd want back — decision,
                         # diagnostics (category from PATCH_REFINER_README.md's
-                        # patch_parse / patch_apply / compile / test / similarity
-                        # / other), and repairs applied if any
+                        # patch_parse / patch_apply / similarity / other),
+                        # and repairs applied if any
    ```
 4. Record the model name and date per case in `expected.json` or a sibling metadata
    file — repair rules are model-behavior-dependent and will age out, per the existing
@@ -139,9 +145,11 @@ wouldn't reflect real traffic. If multi-file cases are wanted for patch_refiner 
 standalone evaluator, source them separately and label them as such.
 
 ### B.4 A quick sanity check once the corpus exists
-`PATCH_REFINER_ROADMAP_CURRENT.md` §4 flags subprocess sandboxing (§2.5 there) as the
-most urgent open patch_refiner item precisely because the checkers are no longer
-stubs — they run real commands. Before running any extracted corpus case through a
-compile/test checker, confirm sandboxing is in place; a corpus built from real
-(occasionally adversarial-by-hallucination, not by intent) model output is exactly the
-input that sandboxing gap is meant to guard against.
+While patch_refiner no longer executes compile/test checkers (see A.4 and
+`PATCH_REFINER_ROADMAP.md` Assumptions), the calling system (`ruchat`) will run
+semantic checks. Before integrating this crate into ruchat's actual pipeline, confirm
+that patch_refiner's apply-success signal is a reliable precondition for ruchat's
+semantic checks — i.e., does "apply failed" ever occur after ruchat would have said
+"fine"? That's now a concrete, testable integration claim rather than a vague
+compatibility goal. A corpus built from real (occasionally adversarial-by-hallucination,
+not by intent) model output is exactly the input that validates this boundary.
