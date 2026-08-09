@@ -466,7 +466,7 @@ impl PatchRefiner {
                         matched_perfect_patch_id: Some(perfect.id.clone()),
                         deviations: None,
                         reasoning: perfect.reason.clone(),
-                        diagnostics: vec![],
+                        diagnostics,
                     };
                 }
                 let changeset = prettydiff::diff_words(&ai_result, &p_result);
@@ -512,6 +512,14 @@ impl PatchRefiner {
         config: &RefinementConfig,
     ) -> RefinementResponse {
         let mut diagnostics = Vec::new();
+        if !config.semantic_checks.run_compile_check && !config.semantic_checks.run_tests {
+            diagnostics.push(Diagnostic {
+                level: DiagnosticLevel::Warning,
+                category: DiagnosticCategory::Other,
+                message: "No semantic checks enabled; approval is syntactic-only (parses + applies cleanly).".into(),
+                location: None,
+            });
+        }
         let checkers: Vec<Box<dyn SemanticChecker>> =
             vec![Box::new(CompileChecker), Box::new(TestChecker)];
 
