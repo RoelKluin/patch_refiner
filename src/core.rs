@@ -128,13 +128,6 @@ impl ChangeSet {
             .entry(key.to_string())
             .or_insert(0) += 1;
     }
-    #[cfg(test)]
-    fn get_counter(&self, key: &str) -> usize {
-        *self.run[self.index].counters.get(key).unwrap_or(&0)
-    }
-    fn counters(&self) -> &HashMap<String, usize> {
-        &self.run[self.index].counters
-    }
     fn handle_part_inner(&mut self, part: &str, cfg: &LanguageWeights) -> f64 {
         self.column += part.len();
         match (self.section.as_str(), part.trim()) {
