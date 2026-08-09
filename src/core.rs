@@ -42,8 +42,7 @@ pub type Result<T> = std::result::Result<T, RefineError>;
 
 trait RustSectionOp {
     fn is_hash_run(&self) -> bool;
-    fn quote_hash_open_shape(&self) -> Option<usize>;
-    fn quote_hash_close_shape(&self) -> Option<usize>;
+    fn quote_hash_shape(&self, bool) -> Option<usize>;
     fn is_alphabetic(&self) -> bool;
     fn reverse(&self) -> String;
     fn get_extendable(&self) -> &str;
@@ -53,15 +52,12 @@ impl RustSectionOp for str {
     fn is_hash_run(&self) -> bool {
         self.chars().all(|c| c == '#')
     }
-    fn quote_hash_open_shape(&self) -> Option<usize> {
-        self.strip_suffix('"')
-            .filter(|r| r.is_hash_run())
-            .map(str::len)
-    }
-    fn quote_hash_close_shape(&self) -> Option<usize> {
-        self.strip_prefix('"')
-            .filter(|r| r.is_hash_run())
-            .map(str::len)
+    fn quote_hash_shape(&self, open: bool) -> Option<usize> {
+        if open {
+            self.strip_prefix('"')
+        } else {
+            self.strip_suffix('"')
+        }.filter(|r| r.is_hash_run()).map(str::len)
     }
     fn is_alphabetic(&self) -> bool {
         self.chars().all(|c| c.is_alphabetic())
@@ -208,8 +204,8 @@ impl ChangeSet {
             }
             ("//" | "/*", _) => self.count("expected:comment_content"),
             (p1, p2) if p1 != "//" && p1 != "/*" => {
-                if let Some(q2) = p2.quote_hash_close_shape() {
-                    if let Some(q1) = p1.quote_hash_open_shape().filter(|q1| *q1 >= q2) {
+                if let Some(q2) = p2.quote_hash_shape(false) {
+                    if let Some(q1) = p1.quote_hash_shape(true).filter(|q1| *q1 >= q2) {
                         if q1 == q2 {
                             self.section = String::new();
                             self.factor = cfg.code_weight;
@@ -220,7 +216,7 @@ impl ChangeSet {
                             self.run.push(Run::new(rec));
                         }
                     }
-                } else if p2.quote_hash_open_shape().is_some() {
+                } else if p2.quote_hash_shape(true).is_some() {
                     self.section = part.to_string();
                     self.factor = cfg.string_weight;
                 } else {
