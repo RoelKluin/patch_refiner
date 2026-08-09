@@ -15,14 +15,14 @@ struct Cli {
     #[arg(long, value_name = "MODE")]
     mode: Option<String>,
 
-    #[arg(long)]
-    compile_check: bool,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    compile_check: Option<bool>,
 
-    #[arg(long)]
-    test_check: bool,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    test_check: Option<bool>,
 
-    #[arg(long)]
-    ignore_whitespace: bool,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    ignore_whitespace: Option<bool>,
 
     #[arg(long)]
     language: Option<String>,
@@ -55,6 +55,15 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow!("Failed to parse JSON request:\n{e}"))?;
 
     let mut config = request.config.unwrap_or_default();
+    if let Some(v) = cli.compile_check {
+        config.semantic_checks.run_compile_check = v;
+    }
+    if let Some(v) = cli.test_check {
+        config.semantic_checks.run_tests = v;
+    }
+    if let Some(v) = cli.ignore_whitespace {
+        config.whitespace.ignore_whitespace = v;
+    }
 
     let effective_lang = cli
         .language
