@@ -10,8 +10,14 @@ const MARKERS: &[(&str, &str)] = &[("//", "\n"), ("/*", "*/"), ("#\"", "\"#")];
 #[derive(thiserror::Error, Debug)]
 pub enum RefineError {
 
+    #[error("invalid --mode value: {0}")]
+    InvalidMode(String),
+
     #[error("Unsupported schema version: {got} (expected {expected})")]
     SchemaVersionMismatch { got: String, expected: String },
+
+    #[error("Failed to parse JSON request:\n{0}")]
+    Json(#[from] serde_json::Error),
 
     #[error("Patch parse error: {0}")]
     PatchParse(String),
@@ -42,7 +48,7 @@ pub type Result<T> = std::result::Result<T, RefineError>;
 
 trait RustSectionOp {
     fn is_hash_run(&self) -> bool;
-    fn quote_hash_shape(&self, bool) -> Option<usize>;
+    fn quote_hash_shape(&self, open: bool) -> Option<usize>;
     fn is_alphabetic(&self) -> bool;
     fn reverse(&self) -> String;
     fn get_extendable(&self) -> &str;

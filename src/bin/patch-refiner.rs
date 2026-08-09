@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
 use clap::Parser;
+use patch_refiner::core::{RefineError, Result};
 use std::fs;
 use std::io::{self, Read};
 
@@ -49,8 +49,7 @@ fn main() -> Result<()> {
         }
     };
 
-    let mut request: RefinementRequest = serde_json::from_str(&input_data)
-        .map_err(|e| anyhow!("Failed to parse JSON request:\n{e}"))?;
+    let mut request: RefinementRequest = serde_json::from_str(&input_data)?;
 
     let mut config = request.config.unwrap_or_default();
 
@@ -87,7 +86,7 @@ fn main() -> Result<()> {
             "mode2" => ApplicationMode::Mode2,
             "mode3" => ApplicationMode::Mode3,
             "mode4" => ApplicationMode::Mode4,
-            other => anyhow::bail!("invalid --mode value: {other}"),
+            other => return Err(RefineError::InvalidMode(other.to_string())),
         });
     }
 
