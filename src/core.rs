@@ -1,6 +1,5 @@
 use crate::checkers::{CompileChecker, SemanticChecker, TestChecker};
 use crate::models::*;
-use anyhow::{Result, anyhow, ensure};
 use diffy::{Patch, apply};
 use prettydiff::text::InlineChangeset;
 use std::collections::HashMap;
@@ -8,6 +7,39 @@ use std::collections::HashMap;
 pub struct PatchRefiner;
 
 const MARKERS: &[(&str, &str)] = &[("//", "\n"), ("/*", "*/"), ("#\"", "\"#")];
+
+#[derive(thiserror::Error, Debug)]
+pub enum RefineError {
+
+    #[error("Unsupported schema version: {got} (expected {expected})")]
+    SchemaVersionMismatch { got: String, expected: String },
+
+    #[error("Patch parse error: {0}")]
+    PatchParse(String),
+
+    #[error("Patch apply error: {0}")]
+    PatchApply(String),
+
+    #[error("{0} must be > {1}")]
+    InvalidLanguageWeights(String, String),
+
+    #[error("Command timed out")]
+    CommandTimedOut,
+
+    #[error("timeout_secs must be > 0")]
+    InvalidTimeout,
+
+    #[error("run_compile_check=true requires compile_command")]
+    MissingCompileCommand,
+
+    #[error("Empty command")]
+    EmptyCommand,
+
+    #[error("IO error: {0}")]
+    StdIo(#[from] std::io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, RefineError>;
 
 trait RustSectionOp {
     fn is_hash_run(&self) -> bool;
@@ -248,18 +280,17 @@ impl ChangeSet {
 impl PatchRefiner {
     pub fn evaluate(req: RefinementRequest) -> Result<RefinementResponse> {
         if let Some(sv) = &req.schema_version {
-            ensure!(sv == SCHEMA_VERSION, "Unsupported schema_version '{sv}': expected '{SCHEMA_VERSION}'");
+            if sv != SCHEMA_VERSION {
+                return Err(RefineError::SchemaVersionMismatch { got: sv.to_string(), expected: SCHEMA_VERSION.to_string() });
+            }
         }
         let config = req.config.clone().unwrap_or_default();
         config
             .semantic_checks
-            .validate()
-            .map_err(|e| anyhow!("Semantic checks config validation failed: {}", e))?;
-        config.whitespace.validate().map_err(|e| {
-            anyhow!("Whitespace config validation failed: {}", e)
-        })?;
+            .validate()?;
+        config.whitespace.validate()?;
         let lang_weights = config.language_weights.clone().unwrap_or_default();
-        lang_weights.validate().map_err(|e| anyhow!("Language weights validation failed: {e}"))?;
+        lang_weights.validate()?;
         let mode = Self::resolve_mode(&req);
 
         let perfect_patches = req.perfect_patches.clone().unwrap_or_default();
@@ -540,3 +571,4 @@ impl PatchRefiner {
         }
     }
 }
+

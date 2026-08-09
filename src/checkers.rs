@@ -1,5 +1,5 @@
+use super::core::{RefineError, Result};
 use crate::models::{Diagnostic, DiagnosticCategory, DiagnosticLevel, SemanticChecksConfig};
-use anyhow::Result;
 use std::{
     process::{Command, Stdio},
     time::Duration,
@@ -37,19 +37,18 @@ impl SemanticChecker for CompileChecker {
     }
 }
 
-fn execute_command(cmd: &str, timeout_secs: u64) -> Result<(bool, String), String> {
+fn execute_command(cmd: &str, timeout_secs: u64) -> Result<(bool, String)> {
     // Parse cmd into program + args (simple split, or use `shell-words` crate)
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     if parts.is_empty() {
-        return Err("Empty command".to_string());
+        return Err(RefineError::EmptyCommand);
     }
 
     let mut child = Command::new(parts[0])
         .args(&parts[1..])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn: {}", e))?;
+        .spawn()?;
 
     let timeout = Duration::from_secs(timeout_secs);
     match child.wait_timeout(timeout) {
@@ -62,10 +61,8 @@ fn execute_command(cmd: &str, timeout_secs: u64) -> Result<(bool, String), Strin
         }
         res => {
             let _ = child.kill();
-            Err(match res {
-                Err(e) => format!("Command failed: {e}"),
-                Ok(_) => "Command timed out".to_string(),
-            })
+            res?;
+            Err(RefineError::CommandTimedOut)
         }
     }
 }

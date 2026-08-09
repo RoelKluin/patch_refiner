@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use super::core::{Result, RefineError};
 
 pub const SCHEMA_VERSION: &str = "1.0";
 
@@ -34,14 +35,14 @@ pub struct SemanticChecksConfig {
     pub timeout_secs: Option<u64>,
 }
 impl SemanticChecksConfig {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         if let Some(timeout) = self.timeout_secs
             && timeout == 0
         {
-            return Err("timeout_secs must be > 0".to_string());
+            return Err(RefineError::InvalidTimeout);
         }
         if self.run_compile_check && self.compile_command.is_none() {
-            return Err("run_compile_check=true requires compile_command".to_string());
+            return Err(RefineError::MissingCompileCommand);
         }
         Ok(())
     }
@@ -84,12 +85,12 @@ impl Default for LanguageWeights {
 }
 
 impl LanguageWeights {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         if self.code_weight <= self.string_weight {
-            return Err("code_weight must be > string_weight".to_string());
+            return Err(RefineError::InvalidLanguageWeights("code_weight".to_string(), "string_weight".to_string()));
         }
         if self.string_weight < self.comment_weight {
-            return Err("string_weight must be >= comment_weight".to_string());
+            return Err(RefineError::InvalidLanguageWeights("string_weight".to_string(), "comment_weight".to_string()));
         }
         Ok(())
     }
@@ -102,7 +103,7 @@ pub struct WhitespaceConfig {
 }
 
 impl WhitespaceConfig {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         Ok(())
     }
 }
