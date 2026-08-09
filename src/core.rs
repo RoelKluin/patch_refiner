@@ -1,6 +1,6 @@
 use crate::checkers::{CompileChecker, SemanticChecker, TestChecker};
 use crate::models::*;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 use diffy::{Patch, apply};
 use prettydiff::text::InlineChangeset;
 use std::collections::HashMap;
@@ -253,11 +253,19 @@ impl ChangeSet {
 
 impl PatchRefiner {
     pub fn evaluate(req: RefinementRequest) -> Result<RefinementResponse> {
+        if let Some(sv) = &req.schema_version {
+            ensure!(sv == SCHEMA_VERSION, "Unsupported schema_version '{sv}': expected '{SCHEMA_VERSION}'");
+        }
         let config = req.config.clone().unwrap_or_default();
         config
             .semantic_checks
             .validate()
             .map_err(|e| anyhow!("Semantic checks config validation failed: {}", e))?;
+        config.whitespace.validate().map_err(|e| {
+            anyhow!("Whitespace config validation failed: {}", e)
+        })?;
+        let lang_weights = config.language_weights.clone().unwrap_or_default();
+        lang_weights.validate().map_err(|e| anyhow!("Language weights validation failed: {e}"))?;
         let mode = Self::resolve_mode(&req);
 
         let perfect_patches = req.perfect_patches.clone().unwrap_or_default();
@@ -271,6 +279,7 @@ impl PatchRefiner {
                 &perfect_patches,
                 mode,
                 &config,
+                &lang_weights,
             )
         })
     }
@@ -403,6 +412,7 @@ impl PatchRefiner {
         perfects: &[PerfectPatch],
         mode: ApplicationMode,
         config: &RefinementConfig,
+        lang_weights: &LanguageWeights,
     ) -> RefinementResponse {
         let mut best_deviation: Option<Deviation> = None;
         let mut diagnostics = Vec::new();
@@ -473,7 +483,6 @@ impl PatchRefiner {
                         diagnostics: vec![],
                     };
                 }
-                let lang_weights = config.language_weights.clone().unwrap_or_default();
                 let changeset = prettydiff::diff_words(&ai_result, &p_result);
                 let deviation_str = changeset.format();
                 let distance = Self::compute_distance(&changeset, &lang_weights);

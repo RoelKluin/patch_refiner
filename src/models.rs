@@ -100,6 +100,13 @@ pub struct WhitespaceConfig {
     pub ignore_whitespace: bool,
     pub normalize_line_endings: bool,
 }
+
+impl WhitespaceConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 impl Default for WhitespaceConfig {
     fn default() -> Self {
         Self {
