@@ -75,6 +75,8 @@ fn evaluate(counters: &HashMap<String, usize>) -> (usize, usize) {
     (expected, unexpected)
 }
 
+struct HypothesisResult { dist: f64, counters: HashMap<String, usize>, closed_cleanly: bool }
+
 fn hypothesis_score(closed_cleanly: bool, expected: usize, unexpected: usize) -> (bool, f64) {
     (closed_cleanly, expected as f64 / (unexpected as f64 + 1.0))
 }
@@ -104,6 +106,7 @@ impl ChangeSet {
     fn reset(&mut self, cfg: &LanguageWeights, i: usize) {
         self.index = i;
         self.section = self.run[i].record.clone();
+        self.run[i].counters.clear();
         self.line_nr = 0;
         self.column = 0;
         self.factor = match self.section.as_str() {
@@ -317,78 +320,42 @@ impl PatchRefiner {
         text
     }
 
-    fn compute_distance(changeset: &InlineChangeset, cfg: &LanguageWeights) -> f64 {
-        let mut change = [ChangeSet::new(), ChangeSet::new()];
-        let mut dist: f64;
-        let mut compared = HashMap::new();
-
-        loop {
-            let mut key = None;
-            'search: for i in 0..change[0].run.len() {
-                for j in 0..change[1].run.len() {
-                    if !compared.contains_key(&(i, j)) {
-                        key = Some((i, j));
-                        break 'search;
-                    }
-                }
-            }
-            let Some((i, j)) = key else { break };
-            change[0].reset(cfg, i);
-            change[1].reset(cfg, j);
-            dist = 0.0;
-
+    fn run_side(cs: &mut ChangeSet, changeset: &InlineChangeset, cfg: &LanguageWeights, side: usize) -> Vec<HypothesisResult> {
+        let mut results = Vec::new();
+        let mut i = 0;
+        while i < cs.run.len() { // cs.run may grow mid-loop; keep draining
+            cs.reset(cfg, i);
+            let mut dist = 0.0;
             for op in changeset.diff().iter() {
                 use prettydiff::basic::DiffOp::*;
                 match op {
-                    Remove(parts) => {
-                        for part in parts.iter() {
-                            dist += change[0].handle_part(part, cfg);
-                        }
-                    }
-                    Insert(parts) => {
-                        for part in parts.iter() {
-                            dist += change[1].handle_part(part, cfg);
-                        }
-                    }
-                    Replace(parts1, parts2) => {
-                        for part in parts1.iter() {
-                            dist += change[0].handle_part(part, cfg);
-                        }
-                        for part in parts2.iter() {
-                            dist += change[1].handle_part(part, cfg);
-                        }
-                    }
-                    Equal(parts) => {
-                        for part in parts.iter() {
-                            _ = change[0].handle_part(part, cfg);
-                            _ = change[1].handle_part(part, cfg);
-                        }
-                    }
+                    Remove(parts) if side == 0 => parts.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
+                    Insert(parts) if side == 1 => parts.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
+                    Replace(p1, _) if side == 0 => p1.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
+                    Replace(_, p2) if side == 1 => p2.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
+                    Equal(parts) => parts.iter().for_each(|p| { dist += cs.handle_part(p, cfg); }),
+                    _ => {}
                 }
             }
-            dist += change.iter_mut().map(|c| c.finalize(cfg)).sum::<f64>();
-            let key = (change[0].index, change[1].index);
-            compared.insert(key, dist);
+            dist += cs.finalize(cfg);
+            results.push(HypothesisResult { dist, counters: cs.run[i].counters.clone(), closed_cleanly: cs.section.is_empty() });
+            i += 1;
         }
+        results
+    }
+
+    fn compute_distance(changeset: &InlineChangeset, cfg: &LanguageWeights) -> f64 {
+        let results0 = Self::run_side(&mut ChangeSet::new(), changeset, cfg, 0);
+        let results1 = Self::run_side(&mut ChangeSet::new(), changeset, cfg, 1);
         let mut best: Option<(bool, f64)> = None;
-        dist = f64::NAN;
-
-        for ((i, j), v) in compared.iter() {
-            change[0].index = *i;
-            change[1].index = *j;
-            let mut merged = change[0].counters().clone();
-            for (k, n) in change[1].counters() {
-                *merged.entry(k.clone()).or_insert(0) += n;
-            }
-            let (expected, unexpected) = evaluate(&merged);
-            let closed_cleanly = change[0].section.is_empty() && change[1].section.is_empty();
-            let score = hypothesis_score(closed_cleanly, expected, unexpected);
-
-            if best.is_none_or(|b| score > b) {
-                best = Some(score);
-                dist = *v;
-            }
-        }
+        let mut dist = f64::NAN;
+        for r0 in &results0 { for r1 in &results1 {
+            let mut merged = r0.counters.clone();
+            for (k, n) in &r1.counters { *merged.entry(k.clone()).or_insert(0) += n; }
+            let (e, u) = evaluate(&merged);
+            let score = hypothesis_score(r0.closed_cleanly && r1.closed_cleanly, e, u);
+            if best.is_none_or(|b| score > b) { best = Some(score); dist = r0.dist + r1.dist; }
+        }}
         dist
     }
 
