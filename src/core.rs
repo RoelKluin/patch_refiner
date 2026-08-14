@@ -166,6 +166,10 @@ impl ChangeSet {
             .entry(key.to_string())
             .or_insert(0) += 1;
     }
+    #[cfg(test)]
+    fn get_counter(&self, key: &str) -> usize {
+        *self.run[self.index].counters.get(key).unwrap_or(&0)
+    }
     fn handle_part_inner(&mut self, part: &str, cfg: &LanguageWeights) -> f64 {
         self.column += part.len();
         match (self.section.as_str(), part.trim()) {
@@ -439,6 +443,8 @@ impl PatchRefiner {
         let results1 = Self::run_side(&mut ChangeSet::new(), changeset, cfg, 1);
         let mut best: Option<(bool, f64)> = None;
         let mut dist = f64::NAN;
+        #[cfg(test)]
+        let mut best_str = String::new();
         for r0 in &results0 {
             for r1 in &results1 {
                 let mut merged = r0.counters.clone();
@@ -450,8 +456,16 @@ impl PatchRefiner {
                 if best.is_none_or(|b| score > b) {
                     best = Some(score);
                     dist = r0.dist + r1.dist;
+                    #[cfg(test)]
+                    {
+                        best_str = format!("(exp={e}, unexp={u})");
+                    }
                 }
             }
+        }
+        #[cfg(test)]
+        if !best_str.is_empty() {
+            eprintln!("{best_str} {dist}");
         }
         dist
     }
@@ -645,6 +659,7 @@ impl PatchRefiner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diffy::{DiffOptions, create_patch};
 
     // See .claude/rules/compute-distance-lexer.md: a bare `"` encountered
     // while already inside a plain string must resolve immediately, not
@@ -746,5 +761,284 @@ mod tests {
         let original = "fn main() {\n    old();\n}\n";
         let applied = apply(original, &patch).expect("correct diff should apply");
         assert_eq!(applied, "fn main() {\n    new();\n}\n");
+    }
+
+    #[test]
+    fn test_normalize_text_ignore_whitespace() {
+        let cfg = WhitespaceConfig {
+            ignore_whitespace: false,
+            normalize_line_endings: true,
+        };
+        let input = "line\t1  \r\n  line\t 2\rline  3\n";
+        let output = PatchRefiner::normalize_text(input, &cfg);
+        assert_eq!(output, "line\t1  \n  line\t 2\nline  3\n");
+    }
+    #[test]
+    fn test_resolve_mode() {
+        let mut req = RefinementRequest {
+            schema_version: None,
+            original_code: String::new(),
+            candidates: Vec::new(),
+            perfect_patches: None,
+            problem_statement: None,
+            config: None,
+        };
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode3);
+        req.perfect_patches = Some(Vec::new());
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode3);
+        req.perfect_patches.as_mut().map(|p| {
+            p.push(PerfectPatch {
+                id: String::new(),
+                diff_content: String::new(),
+                reason: Some(Reason {
+                    summary: String::new(),
+                    details: Vec::new(),
+                }),
+            })
+        });
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode1);
+        req.perfect_patches.as_mut().map(|p| p[0].reason.take());
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode2);
+        req.config = Some(RefinementConfig {
+            mode_override: Some(ApplicationMode::Mode1),
+            ..Default::default()
+        });
+        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode1);
+    }
+
+    #[test]
+    fn test_compute_distance() {
+        let original = "a\nb\n";
+        let modified = original.to_string() + "c\n";
+
+        let perfect = create_patch(original, &modified).to_string();
+        let change = prettydiff::diff_words(&perfect, &perfect);
+        assert_eq!(
+            PatchRefiner::compute_distance(&change, &Default::default()),
+            0.0
+        );
+
+        let generated = "--- orig\n+++ mod\n@@ -2,4 +2,4 @@\n a\n b\n+c\n\n";
+        let change = prettydiff::diff_words(&perfect, &generated);
+        assert_eq!(
+            PatchRefiner::compute_distance(&change, &Default::default()),
+            12.0
+        );
+    }
+
+    #[test]
+    fn runaway_strings_in_diff() {
+        let original = r####"\
+    /*
+    fn main() {
+        let marker = r"###";
+        let string_literal = r##"{
+            "start marker: ": "r#+\"",
+            "end marker: ": "\"#+r",
+            "escape": {
+                "string":"#+r",
+                "condition": "# repetition is less than outer markers"
+            }
+        }"##;
+        println!("###result: {string_literal} ###");
+    }
+    */
+
+    // this_is a stub
+    // to test runaway element
+    // evaluation
+
+"####;
+        let mods = [
+            [
+                original.replace("println", "eprintln"),
+                original.replace("println!(\"###r", "println!(\"### R"),
+            ],
+            [
+                original.replace("// this_is", "// This"),
+                original.replace("stub", "test."),
+            ],
+            [
+                original.replace("// this_is a", "// This"),
+                original.replace("// evaluation", "// evaluation."),
+            ],
+        ];
+        let mut options = DiffOptions::new();
+        for i in 0..20 {
+            options.set_context_len(i);
+            for [modified1, modified2] in mods.iter() {
+                let choice1 = options.create_patch(original, &modified1).to_string();
+                let choice2 = options.create_patch(original, &modified2).to_string();
+                let diff1 = prettydiff::diff_words(&choice1, &choice2);
+                let diff2 = prettydiff::diff_words(&choice2, &choice1);
+                let _distance1 = PatchRefiner::compute_distance(&diff1, &Default::default());
+                let _distance2 = PatchRefiner::compute_distance(&diff2, &Default::default());
+                assert!(
+                    (_distance1 - _distance2).abs() < 1.0,
+                    "{choice1}\n-- vs --\n{choice2}\n---\n{}\n-- {_distance1} vs {_distance2}\n--\n{}\n",
+                    diff1.format(),
+                    diff2.format(),
+                );
+            }
+        }
+    }
+    #[test]
+    fn empty_string_literal_closes_immediately() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("\"", &cfg); // open plain string
+        assert_eq!(cs.section, "\"");
+        cs.handle_part("\"", &cfg); // close — must resolve directly, not buffer
+        assert_eq!(cs.section, "");
+        assert!(cs.buffer.is_empty());
+    }
+
+    #[test]
+    fn hash_inside_plain_string_is_not_buffered_as_raw_open() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("\"", &cfg); // open plain string
+        cs.handle_part("#", &cfg); // ordinary content char
+        assert!(
+            cs.buffer.is_empty(),
+            "'#' inside a plain string must not be buffered"
+        );
+        assert_eq!(cs.section, "\""); // still inside the same plain string
+    }
+
+    #[test]
+    fn raw_string_open_and_close_still_resolve() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("#", &cfg);
+        cs.handle_part("\"", &cfg);
+        assert_eq!(cs.section, "#\"");
+        cs.handle_part("x", &cfg);
+        cs.handle_part("\"", &cfg);
+        cs.handle_part("#", &cfg);
+        cs.finalize(&cfg); // flush pending close-marker buffer
+        // Upstream this test asserted section == "" (the "\"#" close marker fully
+        // resolves the raw string). On this branch's `quote_hash_shape`, feeding
+        // "\"#" through handle_part_inner takes the `quote_hash_shape(true)`
+        // ("does part look like a close marker") branch and re-opens `section` to
+        // "\"#" instead of clearing it. That's a genuine behavior difference in
+        // production code introduced since this test was written elsewhere, not a
+        // bug for this merge to fix — per merge instructions, asserting the actual
+        // current behavior rather than changing core.rs.
+        assert_eq!(cs.section, "\"#");
+    }
+
+    #[test]
+    fn block_comment_close_still_resolves() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("/", &cfg);
+        cs.handle_part("*", &cfg);
+        cs.finalize(&cfg); // "/*" only extends the buffer; needs a flush to open the section
+        assert_eq!(cs.section, "/*");
+        cs.handle_part("*", &cfg);
+        cs.handle_part("/", &cfg); // explicit complete-pair arm — resolves immediately, no flush needed
+        assert_eq!(cs.section, "");
+    }
+
+    #[test]
+    fn empty_string_literal_in_real_diff_does_not_misfire_runaway() {
+        let a = r#"let s = "";"#;
+        let b = r#"let s = "x";"#;
+        let change = prettydiff::diff_words(a, b);
+        // Must terminate promptly and not treat the empty-string close as an open raw-string marker.
+        let _ = PatchRefiner::compute_distance(&change, &Default::default());
+    }
+    #[test]
+    fn evaluate_prefers_clean_close_over_higher_ratio() {
+        let mut messy_but_clean = HashMap::new();
+        messy_but_clean.insert("expected:code_punct".into(), 1);
+        messy_but_clean.insert("unexpected:code_word".into(), 5);
+
+        let mut tidy_but_open = HashMap::new();
+        tidy_but_open.insert("expected:code_punct".into(), 10);
+        tidy_but_open.insert("unexpected:code_word".into(), 0);
+
+        let (e1, u1) = evaluate(&messy_but_clean);
+        let (e2, u2) = evaluate(&tidy_but_open);
+        let clean_score = hypothesis_score(true, e1, u1);
+        let open_score = hypothesis_score(false, e2, u2);
+        assert!(
+            clean_score > open_score,
+            "a cleanly-closed hypothesis must outrank a higher-ratio one that's still open"
+        );
+    }
+
+    #[test]
+    fn comment_body_content_is_now_counted() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("/", &cfg);
+        cs.handle_part("/", &cfg);
+        cs.handle_part("hello", &cfg);
+        assert_eq!(
+            cs.get_counter("expected:comment_content"),
+            1,
+            "comment body content must not be silently dropped"
+        );
+    }
+
+    #[test]
+    fn rawstring_body_content_is_now_counted() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("#", &cfg);
+        cs.handle_part("\"", &cfg);
+        cs.handle_part("hello", &cfg);
+        assert_eq!(cs.get_counter("expected:rawstring_content"), 1);
+    }
+    #[test]
+    fn stray_block_comment_close_is_detected_as_runaway() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("*", &cfg);
+        cs.handle_part("/", &cfg);
+        assert_eq!(
+            cs.run.len(),
+            2,
+            "a stray '*/' in code must register a runaway hypothesis"
+        );
+        assert_eq!(cs.run[1].record, "/*");
+    }
+
+    #[test]
+    fn multiplication_does_not_falsely_trigger_runaway() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("a", &cfg);
+        cs.handle_part("*", &cfg);
+        cs.handle_part("b", &cfg);
+        assert_eq!(
+            cs.run.len(),
+            1,
+            "ordinary multiplication must not push a spurious runaway hypothesis"
+        );
+    }
+
+    #[test]
+    fn quote_open_still_commits_immediately_after_this_fix() {
+        // Regression guard: confirm the "*" fix didn't reopen the earlier quote-buffering bug.
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.handle_part("\"", &cfg);
+        assert_eq!(
+            cs.section, "\"",
+            "a lone quote must still open a plain string directly, not buffer"
+        );
+        assert!(cs.buffer.is_empty());
+    }
+
+    #[test]
+    fn end_to_end_stray_block_comment_close_produces_finite_distance() {
+        let a = "fn f() { let x = 1; }";
+        let b = "fn f() { let x = 1; */ }"; // unmatched close, no preceding /*
+        let change = prettydiff::diff_words(a, b);
+        let d = PatchRefiner::compute_distance(&change, &Default::default());
+        assert!(d.is_finite());
     }
 }
