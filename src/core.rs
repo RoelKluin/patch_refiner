@@ -595,3 +595,54 @@ impl PatchRefiner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // See .claude/rules/compute-distance-lexer.md: a bare `"` encountered
+    // while already inside a plain string must resolve immediately, not
+    // buffer -- buffering it breaks empty string literals ("").
+    #[test]
+    fn empty_string_literal_resolves_immediately_without_buffering() {
+        let cfg = LanguageWeights::default();
+        let mut cs = ChangeSet::new();
+        cs.reset(&cfg, 0);
+
+        // Opening quote of `""`: must open the string section immediately,
+        // not sit buffered waiting to see whether it forms a raw-string marker.
+        cs.handle_part("\"", &cfg);
+        assert_eq!(
+            cs.section, "\"",
+            "opening quote should open the string section"
+        );
+        assert!(
+            cs.buffer.is_empty(),
+            "opening quote of an empty string must resolve immediately, not buffer"
+        );
+
+        // Closing quote of `""`: must close the section immediately, not buffer.
+        cs.handle_part("\"", &cfg);
+        assert_eq!(
+            cs.section, "",
+            "closing quote should close the string section back to code"
+        );
+        assert!(
+            cs.buffer.is_empty(),
+            "closing quote of an empty string must resolve immediately, not buffer"
+        );
+
+        // No ambiguous-marker or unexpected-token hypotheses should have
+        // been spawned for a plain empty string literal.
+        assert_eq!(
+            cs.run.len(),
+            1,
+            "empty string literal must not spawn alternate hypotheses"
+        );
+        let (_, unexpected) = evaluate(&cs.run[0].counters);
+        assert_eq!(
+            unexpected, 0,
+            "empty string literal must not be flagged as unexpected"
+        );
+    }
+}
