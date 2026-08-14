@@ -9,7 +9,6 @@ const MARKERS: &[(&str, &str)] = &[("//", "\n"), ("/*", "*/"), ("#\"", "\"#")];
 
 #[derive(thiserror::Error, Debug)]
 pub enum RefineError {
-
     #[error("invalid --mode value: {0}")]
     InvalidMode(String),
 
@@ -63,7 +62,9 @@ impl RustSectionOp for str {
             self.strip_prefix('"')
         } else {
             self.strip_suffix('"')
-        }.filter(|r| r.is_hash_run()).map(str::len)
+        }
+        .filter(|r| r.is_hash_run())
+        .map(str::len)
     }
     fn is_alphabetic(&self) -> bool {
         self.chars().all(|c| c.is_alphabetic())
@@ -108,7 +109,11 @@ fn evaluate(counters: &HashMap<String, usize>) -> (usize, usize) {
     (expected, unexpected)
 }
 
-struct HypothesisResult { dist: f64, counters: HashMap<String, usize>, closed_cleanly: bool }
+struct HypothesisResult {
+    dist: f64,
+    counters: HashMap<String, usize>,
+    closed_cleanly: bool,
+}
 
 fn hypothesis_score(closed_cleanly: bool, expected: usize, unexpected: usize) -> (bool, f64) {
     (closed_cleanly, expected as f64 / (unexpected as f64 + 1.0))
@@ -280,15 +285,16 @@ impl ChangeSet {
 
 impl PatchRefiner {
     pub fn evaluate(req: RefinementRequest) -> Result<RefinementResponse> {
-        if let Some(sv) = &req.schema_version {
-            if sv != SCHEMA_VERSION {
-                return Err(RefineError::SchemaVersionMismatch { got: sv.to_string(), expected: SCHEMA_VERSION.to_string() });
-            }
+        if let Some(sv) = &req.schema_version
+            && sv != SCHEMA_VERSION
+        {
+            return Err(RefineError::SchemaVersionMismatch {
+                got: sv.to_string(),
+                expected: SCHEMA_VERSION.to_string(),
+            });
         }
         let config = req.config.clone().unwrap_or_default();
-        config
-            .semantic_checks
-            .validate()?;
+        config.semantic_checks.validate()?;
         config.whitespace.validate()?;
         let lang_weights = config.language_weights.clone().unwrap_or_default();
         lang_weights.validate()?;
@@ -345,25 +351,45 @@ impl PatchRefiner {
         text
     }
 
-    fn run_side(cs: &mut ChangeSet, changeset: &InlineChangeset, cfg: &LanguageWeights, side: usize) -> Vec<HypothesisResult> {
+    fn run_side(
+        cs: &mut ChangeSet,
+        changeset: &InlineChangeset,
+        cfg: &LanguageWeights,
+        side: usize,
+    ) -> Vec<HypothesisResult> {
         let mut results = Vec::new();
         let mut i = 0;
-        while i < cs.run.len() { // cs.run may grow mid-loop; keep draining
+        while i < cs.run.len() {
+            // cs.run may grow mid-loop; keep draining
             cs.reset(cfg, i);
             let mut dist = 0.0;
             for op in changeset.diff().iter() {
                 use prettydiff::basic::DiffOp::*;
                 match op {
-                    Remove(parts) if side == 0 => parts.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
-                    Insert(parts) if side == 1 => parts.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
-                    Replace(p1, _) if side == 0 => p1.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
-                    Replace(_, p2) if side == 1 => p2.iter().for_each(|p| dist += cs.handle_part(p, cfg)),
-                    Equal(parts) => parts.iter().for_each(|p| { let _ = cs.handle_part(p, cfg); }),
+                    Remove(parts) if side == 0 => {
+                        parts.iter().for_each(|p| dist += cs.handle_part(p, cfg))
+                    }
+                    Insert(parts) if side == 1 => {
+                        parts.iter().for_each(|p| dist += cs.handle_part(p, cfg))
+                    }
+                    Replace(p1, _) if side == 0 => {
+                        p1.iter().for_each(|p| dist += cs.handle_part(p, cfg))
+                    }
+                    Replace(_, p2) if side == 1 => {
+                        p2.iter().for_each(|p| dist += cs.handle_part(p, cfg))
+                    }
+                    Equal(parts) => parts.iter().for_each(|p| {
+                        let _ = cs.handle_part(p, cfg);
+                    }),
                     _ => {}
                 }
             }
             dist += cs.finalize(cfg);
-            results.push(HypothesisResult { dist, counters: cs.run[i].counters.clone(), closed_cleanly: cs.section.is_empty() });
+            results.push(HypothesisResult {
+                dist,
+                counters: cs.run[i].counters.clone(),
+                closed_cleanly: cs.section.is_empty(),
+            });
             i += 1;
         }
         results
@@ -374,13 +400,20 @@ impl PatchRefiner {
         let results1 = Self::run_side(&mut ChangeSet::new(), changeset, cfg, 1);
         let mut best: Option<(bool, f64)> = None;
         let mut dist = f64::NAN;
-        for r0 in &results0 { for r1 in &results1 {
-            let mut merged = r0.counters.clone();
-            for (k, n) in &r1.counters { *merged.entry(k.clone()).or_insert(0) += n; }
-            let (e, u) = evaluate(&merged);
-            let score = hypothesis_score(r0.closed_cleanly && r1.closed_cleanly, e, u);
-            if best.is_none_or(|b| score > b) { best = Some(score); dist = r0.dist + r1.dist; }
-        }}
+        for r0 in &results0 {
+            for r1 in &results1 {
+                let mut merged = r0.counters.clone();
+                for (k, n) in &r1.counters {
+                    *merged.entry(k.clone()).or_insert(0) += n;
+                }
+                let (e, u) = evaluate(&merged);
+                let score = hypothesis_score(r0.closed_cleanly && r1.closed_cleanly, e, u);
+                if best.is_none_or(|b| score > b) {
+                    best = Some(score);
+                    dist = r0.dist + r1.dist;
+                }
+            }
+        }
         dist
     }
 
@@ -562,4 +595,3 @@ impl PatchRefiner {
         }
     }
 }
-

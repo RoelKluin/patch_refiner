@@ -1,5 +1,5 @@
+use super::core::{RefineError, Result};
 use serde::{Deserialize, Serialize};
-use super::core::{Result, RefineError};
 
 pub const SCHEMA_VERSION: &str = "1.0";
 
@@ -87,10 +87,16 @@ impl Default for LanguageWeights {
 impl LanguageWeights {
     pub fn validate(&self) -> Result<()> {
         if self.code_weight <= self.string_weight {
-            return Err(RefineError::InvalidLanguageWeights("code_weight".to_string(), "string_weight".to_string()));
+            return Err(RefineError::InvalidLanguageWeights(
+                "code_weight".to_string(),
+                "string_weight".to_string(),
+            ));
         }
         if self.string_weight < self.comment_weight {
-            return Err(RefineError::InvalidLanguageWeights("string_weight".to_string(), "comment_weight".to_string()));
+            return Err(RefineError::InvalidLanguageWeights(
+                "string_weight".to_string(),
+                "comment_weight".to_string(),
+            ));
         }
         Ok(())
     }
