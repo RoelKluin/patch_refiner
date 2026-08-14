@@ -369,43 +369,125 @@ impl PatchRefiner {
         text
     }
 
-    /// Pre-parse repair for the most common AI-generated diff malformation:
-    /// a context line inside a hunk that is missing its leading single space
-    /// (i.e. it starts with neither '+', '-', '\', nor ' '). Only lines
-    /// between a hunk header (`@@ ... @@`) and the next file/hunk header are
-    /// touched; already-correct lines and headers are left untouched.
+    /// Pre-parse repair for the two most common AI-generated diff
+    /// malformations:
+    /// 1. a context line inside a hunk that is missing its leading single
+    ///    space (i.e. it starts with neither '+', '-', '\', nor ' ');
+    /// 2. a `@@ -start,count +start,count @@` hunk header whose reported
+    ///    counts don't match the hunk's actual body. Per
+    ///    .claude/rules/patch-application.md, the model-written counts are
+    ///    never trusted for any decision -- when a hunk closes, the correct
+    ///    counts are recomputed by counting that hunk's context/added/removed
+    ///    body lines and the header is rewritten with those counts. `start`
+    ///    values and already-correct headers are left byte-for-byte
+    ///    untouched; only wrong count numbers are rewritten.
+    ///
+    /// Only lines between a hunk header (`@@ ... @@`) and the next
+    /// file/hunk header are touched; already-correct lines and headers are
+    /// left untouched.
     fn repair_context_lines(diff: &str) -> String {
         let mut in_hunk = false;
-        let mut out = String::with_capacity(diff.len());
+        let mut out_lines: Vec<String> = Vec::new();
         let ends_with_newline = diff.ends_with('\n');
-        let mut lines = diff.lines().peekable();
-        while let Some(line) = lines.next() {
+        let mut pending_header: Option<usize> = None;
+        let (mut ctx, mut add, mut rem) = (0u64, 0u64, 0u64);
+
+        for line in diff.lines() {
             if line.starts_with("@@ ") || line == "@@" {
+                if let Some(idx) = pending_header.take() {
+                    Self::finalize_hunk_header(&mut out_lines, idx, ctx, rem, add);
+                }
                 in_hunk = true;
-                out.push_str(line);
+                pending_header = Some(out_lines.len());
+                (ctx, add, rem) = (0, 0, 0);
+                out_lines.push(line.to_string());
             } else if line.starts_with("--- ")
                 || line.starts_with("+++ ")
                 || line.starts_with("diff --git ")
                 || line.starts_with("index ")
             {
+                if let Some(idx) = pending_header.take() {
+                    Self::finalize_hunk_header(&mut out_lines, idx, ctx, rem, add);
+                }
                 in_hunk = false;
-                out.push_str(line);
+                out_lines.push(line.to_string());
             } else if in_hunk
                 && !line.starts_with('+')
                 && !line.starts_with('-')
                 && !line.starts_with(' ')
                 && !line.starts_with('\\')
             {
-                out.push(' ');
-                out.push_str(line);
+                ctx += 1;
+                out_lines.push(format!(" {line}"));
             } else {
-                out.push_str(line);
-            }
-            if lines.peek().is_some() || ends_with_newline {
-                out.push('\n');
+                if in_hunk {
+                    match line.as_bytes().first() {
+                        Some(b'+') => add += 1,
+                        Some(b'-') => rem += 1,
+                        Some(b' ') => ctx += 1,
+                        _ => {}
+                    }
+                }
+                out_lines.push(line.to_string());
             }
         }
+        if let Some(idx) = pending_header.take() {
+            Self::finalize_hunk_header(&mut out_lines, idx, ctx, rem, add);
+        }
+
+        let mut out = out_lines.join("\n");
+        if ends_with_newline {
+            out.push('\n');
+        }
         out
+    }
+
+    /// Rewrites `out_lines[idx]` (a hunk header) in place so its `,count`
+    /// numbers reflect the hunk body actually counted (`ctx`/`rem`/`add`
+    /// context/removed/added lines). `start` values and any trailing section
+    /// text are preserved verbatim. If the header's counts already match,
+    /// the line is left byte-for-byte unchanged.
+    fn finalize_hunk_header(out_lines: &mut [String], idx: usize, ctx: u64, rem: u64, add: u64) {
+        let header = out_lines[idx].clone();
+        let Some((ranges, trailing)) = Self::split_hunk_header(&header) else {
+            return;
+        };
+        let mut parts = ranges.splitn(2, ' ');
+        let (Some(left), Some(right)) = (parts.next(), parts.next()) else {
+            return;
+        };
+        let Some((start1, count1)) = Self::parse_hunk_range(left) else {
+            return;
+        };
+        let Some((start2, count2)) = Self::parse_hunk_range(right) else {
+            return;
+        };
+
+        let want1 = ctx + rem;
+        let want2 = ctx + add;
+        if count1 == want1 && count2 == want2 {
+            return;
+        }
+
+        out_lines[idx] = format!("@@ -{start1},{want1} +{start2},{want2} @@{trailing}");
+    }
+
+    /// Splits `"@@ -1,3 +1,3 @@ optional section"` into
+    /// (`"-1,3 +1,3"`, `" optional section"`).
+    fn split_hunk_header(line: &str) -> Option<(&str, &str)> {
+        let rest = line.strip_prefix("@@ ")?;
+        let idx = rest.find(" @@")?;
+        Some((&rest[..idx], &rest[idx + 3..]))
+    }
+
+    /// Parses `"-1,3"`/`"+1"`-style hunk range into (start, count), defaulting
+    /// count to 1 when omitted, per unified-diff convention.
+    fn parse_hunk_range(part: &str) -> Option<(&str, u64)> {
+        let body = part.strip_prefix('-').or_else(|| part.strip_prefix('+'))?;
+        match body.split_once(',') {
+            Some((start, count)) => Some((start, count.parse().ok()?)),
+            None => Some((body, 1)),
+        }
     }
 
     fn run_side(
@@ -775,6 +857,63 @@ mod tests {
         let original = "fn main() {\n    old();\n}\n";
         let applied = apply(original, &patch).expect("correct diff should apply");
         assert_eq!(applied, "fn main() {\n    new();\n}\n");
+    }
+
+    // See .claude/rules/patch-application.md: recompute wrong hunk-header
+    // line counts from the hunk body instead of trusting or rejecting them.
+    #[test]
+    fn repair_context_lines_fixes_wrong_hunk_header_counts() {
+        let broken = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,2 +1,2 @@\n",
+            " fn main() {\n",
+            "-    old();\n",
+            "+    new();\n",
+            "+    extra();\n",
+            " }\n",
+        );
+        let repaired = PatchRefiner::repair_context_lines(broken);
+        let expected = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,3 +1,4 @@\n",
+            " fn main() {\n",
+            "-    old();\n",
+            "+    new();\n",
+            "+    extra();\n",
+            " }\n",
+        );
+        assert_eq!(repaired, expected);
+
+        let patch = Patch::from_str(&repaired).expect("repaired diff should parse");
+        let original = "fn main() {\n    old();\n}\n";
+        let applied = apply(original, &patch).expect("repaired diff should apply");
+        assert_eq!(applied, "fn main() {\n    new();\n    extra();\n}\n");
+    }
+
+    #[test]
+    fn repair_context_lines_leaves_correct_hunk_header_unchanged() {
+        let correct = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,3 +1,4 @@\n",
+            " fn main() {\n",
+            "-    old();\n",
+            "+    new();\n",
+            "+    extra();\n",
+            " }\n",
+        );
+        let repaired = PatchRefiner::repair_context_lines(correct);
+        assert_eq!(
+            repaired, correct,
+            "an already-correct hunk header must be returned byte-for-byte unchanged"
+        );
+
+        let patch = Patch::from_str(&repaired).expect("correct diff should parse");
+        let original = "fn main() {\n    old();\n}\n";
+        let applied = apply(original, &patch).expect("correct diff should apply");
+        assert_eq!(applied, "fn main() {\n    new();\n    extra();\n}\n");
     }
 
     #[test]
