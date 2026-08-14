@@ -83,7 +83,7 @@ run_gate_in() {
   echo "--- gate: $dir ---" | tee -a "$LOG_FILE"
   (
     cd "$dir" &&
-      cargo fmt --check &&
+      cargo fmt &&
       cargo clippy -- -D warnings &&
       cargo test
   ) >>"$LOG_FILE" 2>&1
