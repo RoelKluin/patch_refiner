@@ -351,6 +351,45 @@ impl PatchRefiner {
         text
     }
 
+    /// Pre-parse repair for the most common AI-generated diff malformation:
+    /// a context line inside a hunk that is missing its leading single space
+    /// (i.e. it starts with neither '+', '-', '\', nor ' '). Only lines
+    /// between a hunk header (`@@ ... @@`) and the next file/hunk header are
+    /// touched; already-correct lines and headers are left untouched.
+    fn repair_context_lines(diff: &str) -> String {
+        let mut in_hunk = false;
+        let mut out = String::with_capacity(diff.len());
+        let ends_with_newline = diff.ends_with('\n');
+        let mut lines = diff.lines().peekable();
+        while let Some(line) = lines.next() {
+            if line.starts_with("@@ ") || line == "@@" {
+                in_hunk = true;
+                out.push_str(line);
+            } else if line.starts_with("--- ")
+                || line.starts_with("+++ ")
+                || line.starts_with("diff --git ")
+                || line.starts_with("index ")
+            {
+                in_hunk = false;
+                out.push_str(line);
+            } else if in_hunk
+                && !line.starts_with('+')
+                && !line.starts_with('-')
+                && !line.starts_with(' ')
+                && !line.starts_with('\\')
+            {
+                out.push(' ');
+                out.push_str(line);
+            } else {
+                out.push_str(line);
+            }
+            if lines.peek().is_some() || ends_with_newline {
+                out.push('\n');
+            }
+        }
+        out
+    }
+
     fn run_side(
         cs: &mut ChangeSet,
         changeset: &InlineChangeset,
@@ -429,7 +468,8 @@ impl PatchRefiner {
         let mut diagnostics = Vec::new();
 
         for candidate in candidates {
-            let ai_patch = match Patch::from_str(&candidate.diff_content) {
+            let repaired_candidate_diff = Self::repair_context_lines(&candidate.diff_content);
+            let ai_patch = match Patch::from_str(&repaired_candidate_diff) {
                 Ok(p) => p,
                 Err(e) => {
                     diagnostics.push(Diagnostic {
@@ -456,7 +496,8 @@ impl PatchRefiner {
             };
 
             for perfect in perfects {
-                let p_patch = match Patch::from_str(&perfect.diff_content) {
+                let repaired_perfect_diff = Self::repair_context_lines(&perfect.diff_content);
+                let p_patch = match Patch::from_str(&repaired_perfect_diff) {
                     Ok(p) => p,
                     Err(e) => {
                         diagnostics.push(Diagnostic {
@@ -547,7 +588,8 @@ impl PatchRefiner {
         }
 
         for candidate in candidates {
-            let patch = match Patch::from_str(&candidate.diff_content) {
+            let repaired_candidate_diff = Self::repair_context_lines(&candidate.diff_content);
+            let patch = match Patch::from_str(&repaired_candidate_diff) {
                 Ok(p) => p,
                 Err(e) => {
                     diagnostics.push(Diagnostic {
@@ -644,5 +686,61 @@ mod tests {
             unexpected, 0,
             "empty string literal must not be flagged as unexpected"
         );
+    }
+
+    // See .claude/rules/patch-application.md: repair missing leading spaces
+    // on context lines instead of rejecting them, without touching hunk
+    // header line counts or already-correct diffs.
+    #[test]
+    fn repair_context_lines_adds_missing_leading_space() {
+        let broken = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,3 +1,3 @@\n",
+            " fn main() {\n",
+            "-    old();\n",
+            "+    new();\n",
+            "}\n",
+        );
+        let repaired = PatchRefiner::repair_context_lines(broken);
+        let expected = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,3 +1,3 @@\n",
+            " fn main() {\n",
+            "-    old();\n",
+            "+    new();\n",
+            " }\n",
+        );
+        assert_eq!(repaired, expected);
+
+        // The repaired diff must now parse and apply cleanly.
+        let patch = Patch::from_str(&repaired).expect("repaired diff should parse");
+        let original = "fn main() {\n    old();\n}\n";
+        let applied = apply(original, &patch).expect("repaired diff should apply");
+        assert_eq!(applied, "fn main() {\n    new();\n}\n");
+    }
+
+    #[test]
+    fn repair_context_lines_leaves_correct_diff_unchanged() {
+        let correct = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,3 +1,3 @@\n",
+            " fn main() {\n",
+            "-    old();\n",
+            "+    new();\n",
+            " }\n",
+        );
+        let repaired = PatchRefiner::repair_context_lines(correct);
+        assert_eq!(
+            repaired, correct,
+            "an already-correct diff must be returned unchanged"
+        );
+
+        let patch = Patch::from_str(&repaired).expect("correct diff should parse");
+        let original = "fn main() {\n    old();\n}\n";
+        let applied = apply(original, &patch).expect("correct diff should apply");
+        assert_eq!(applied, "fn main() {\n    new();\n}\n");
     }
 }
