@@ -302,6 +302,47 @@ impl ChangeSet {
 }
 
 impl PatchRefiner {
+    fn diag(level: DiagnosticLevel, category: DiagnosticCategory, message: String) -> Diagnostic {
+        Diagnostic {
+            level,
+            category,
+            message,
+            location: None,
+        }
+    }
+
+    fn response(
+        mode: ApplicationMode,
+        decision: Decision,
+        diagnostics: Vec<Diagnostic>,
+    ) -> RefinementResponse {
+        RefinementResponse {
+            schema_version: crate::models::SCHEMA_VERSION.to_string(),
+            mode,
+            decision,
+            selected_patch_id: None,
+            matched_perfect_patch_id: None,
+            deviations: None,
+            reasoning: None,
+            diagnostics,
+        }
+    }
+
+    fn parse_patch<'a>(
+        diff: &'a str,
+        label: &str,
+        id: &str,
+        level: DiagnosticLevel,
+    ) -> std::result::Result<Patch<'a, str>, Diagnostic> {
+        Patch::from_str(diff).map_err(|e| {
+            Self::diag(
+                level,
+                DiagnosticCategory::PatchParse,
+                format!("{label} {id} invalid: {e}"),
+            )
+        })
+    }
+
     pub fn evaluate(req: RefinementRequest) -> Result<RefinementResponse> {
         if let Some(sv) = &req.schema_version
             && sv != SCHEMA_VERSION
@@ -311,11 +352,7 @@ impl PatchRefiner {
                 expected: SCHEMA_VERSION.to_string(),
             });
         }
-        let config = req.config.clone().unwrap_or_default();
-        config.semantic_checks.validate()?;
-        config.whitespace.validate()?;
-        let lang_weights = config.language_weights.clone().unwrap_or_default();
-        lang_weights.validate()?;
+        let (config, lang_weights) = Self::resolve_config(&req)?;
         let mode = Self::resolve_mode(&req);
 
         let perfect_patches = req.perfect_patches.clone().unwrap_or_default();
@@ -352,6 +389,15 @@ impl PatchRefiner {
             }
             _ => ApplicationMode::Mode4,
         }
+    }
+
+    fn resolve_config(req: &RefinementRequest) -> Result<(RefinementConfig, LanguageWeights)> {
+        let config = req.config.clone().unwrap_or_default();
+        config.semantic_checks.validate()?;
+        config.whitespace.validate()?;
+        let lang_weights = config.language_weights.clone().unwrap_or_default();
+        lang_weights.validate()?;
+        Ok((config, lang_weights))
     }
 
     fn normalize_text(s: &str, cfg: &WhitespaceConfig) -> String {
@@ -583,15 +629,15 @@ impl PatchRefiner {
             // numbers -- these are unreliable when AI-generated. If counts matter,
             // recompute them from the hunk body. See .claude/rules/patch-application.md.
             let repaired_candidate_diff = Self::repair_context_lines(&candidate.diff_content);
-            let ai_patch = match Patch::from_str(&repaired_candidate_diff) {
+            let ai_patch = match Self::parse_patch(
+                &repaired_candidate_diff,
+                "Candidate",
+                &candidate.id,
+                DiagnosticLevel::Error,
+            ) {
                 Ok(p) => p,
-                Err(e) => {
-                    diagnostics.push(Diagnostic {
-                        level: DiagnosticLevel::Error,
-                        category: DiagnosticCategory::PatchParse,
-                        message: format!("Candidate {} invalid: {}", candidate.id, e),
-                        location: None,
-                    });
+                Err(d) => {
+                    diagnostics.push(d);
                     continue;
                 }
             };
@@ -599,27 +645,26 @@ impl PatchRefiner {
             let ai_result = match apply(original, &ai_patch) {
                 Ok(res) => Self::normalize_text(&res, &config.whitespace),
                 Err(e) => {
-                    diagnostics.push(Diagnostic {
-                        level: DiagnosticLevel::Error,
-                        category: DiagnosticCategory::PatchApply,
-                        message: apply_failure_message(&candidate.id, e, original),
-                        location: None,
-                    });
+                    diagnostics.push(Self::diag(
+                        DiagnosticLevel::Error,
+                        DiagnosticCategory::PatchApply,
+                        apply_failure_message(&candidate.id, e, original),
+                    ));
                     continue;
                 }
             };
 
             for perfect in perfects {
                 let repaired_perfect_diff = Self::repair_context_lines(&perfect.diff_content);
-                let p_patch = match Patch::from_str(&repaired_perfect_diff) {
+                let p_patch = match Self::parse_patch(
+                    &repaired_perfect_diff,
+                    "Perfect patch",
+                    &perfect.id,
+                    DiagnosticLevel::Warning,
+                ) {
                     Ok(p) => p,
-                    Err(e) => {
-                        diagnostics.push(Diagnostic {
-                            level: DiagnosticLevel::Warning,
-                            category: DiagnosticCategory::PatchParse,
-                            message: format!("Perfect patch {} invalid: {}", perfect.id, e),
-                            location: None,
-                        });
+                    Err(d) => {
+                        diagnostics.push(d);
                         continue;
                     }
                 };
@@ -627,26 +672,21 @@ impl PatchRefiner {
                 let p_result = match apply(original, &p_patch) {
                     Ok(res) => Self::normalize_text(&res, &config.whitespace),
                     Err(e) => {
-                        diagnostics.push(Diagnostic {
-                            level: DiagnosticLevel::Warning,
-                            category: DiagnosticCategory::PatchApply,
-                            message: format!("Perfect patch {} apply failed: {}", perfect.id, e),
-                            location: None,
-                        });
+                        diagnostics.push(Self::diag(
+                            DiagnosticLevel::Warning,
+                            DiagnosticCategory::PatchApply,
+                            format!("Perfect patch {} apply failed: {}", perfect.id, e),
+                        ));
                         continue;
                     }
                 };
 
                 if ai_result == p_result {
                     return RefinementResponse {
-                        schema_version: crate::models::SCHEMA_VERSION.to_string(),
-                        mode,
-                        decision: Decision::Approved,
                         selected_patch_id: Some(candidate.id.clone()),
                         matched_perfect_patch_id: Some(perfect.id.clone()),
-                        deviations: None,
                         reasoning: perfect.reason.clone(),
-                        diagnostics,
+                        ..Self::response(mode, Decision::Approved, diagnostics)
                     };
                 }
                 let changeset = prettydiff::diff_words(&ai_result, &p_result);
@@ -675,14 +715,9 @@ impl PatchRefiner {
         });
 
         RefinementResponse {
-            schema_version: crate::models::SCHEMA_VERSION.to_string(),
-            mode,
-            decision: Decision::Rejected,
-            selected_patch_id: None,
-            matched_perfect_patch_id: None,
             deviations: best_deviation,
             reasoning: closest_reasoning,
-            diagnostics,
+            ..Self::response(mode, Decision::Rejected, diagnostics)
         }
     }
 
@@ -693,62 +728,45 @@ impl PatchRefiner {
     ) -> RefinementResponse {
         let mut diagnostics = Vec::new();
         if !config.semantic_checks.run_compile_check && !config.semantic_checks.run_tests {
-            diagnostics.push(Diagnostic {
-                level: DiagnosticLevel::Warning,
-                category: DiagnosticCategory::Other,
-                message: "No semantic checks enabled; approval is syntactic-only (parses + applies cleanly).".into(),
-                location: None,
-            });
+            diagnostics.push(Self::diag(
+                DiagnosticLevel::Warning,
+                DiagnosticCategory::Other,
+                "No semantic checks enabled; approval is syntactic-only (parses + applies cleanly).".into(),
+            ));
         }
 
         for candidate in candidates {
             let repaired_candidate_diff = Self::repair_context_lines(&candidate.diff_content);
-            let patch = match Patch::from_str(&repaired_candidate_diff) {
+            let patch = match Self::parse_patch(
+                &repaired_candidate_diff,
+                "Candidate",
+                &candidate.id,
+                DiagnosticLevel::Error,
+            ) {
                 Ok(p) => p,
-                Err(e) => {
-                    diagnostics.push(Diagnostic {
-                        level: DiagnosticLevel::Error,
-                        category: DiagnosticCategory::PatchParse,
-                        message: format!("Candidate {} invalid: {e}", candidate.id),
-                        location: None,
-                    });
+                Err(d) => {
+                    diagnostics.push(d);
                     continue;
                 }
             };
             let _ = match apply(original, &patch) {
                 Ok(r) => r,
                 Err(e) => {
-                    diagnostics.push(Diagnostic {
-                        level: DiagnosticLevel::Error,
-                        category: DiagnosticCategory::PatchApply,
-                        message: apply_failure_message(&candidate.id, e, original),
-                        location: None,
-                    });
+                    diagnostics.push(Self::diag(
+                        DiagnosticLevel::Error,
+                        DiagnosticCategory::PatchApply,
+                        apply_failure_message(&candidate.id, e, original),
+                    ));
                     continue;
                 }
             };
             return RefinementResponse {
-                schema_version: crate::models::SCHEMA_VERSION.to_string(),
-                mode: ApplicationMode::Mode3,
-                decision: Decision::Approved,
                 selected_patch_id: Some(candidate.id.clone()),
-                matched_perfect_patch_id: None,
-                deviations: None,
-                reasoning: None,
-                diagnostics,
+                ..Self::response(ApplicationMode::Mode3, Decision::Approved, diagnostics)
             };
         }
 
-        RefinementResponse {
-            schema_version: crate::models::SCHEMA_VERSION.to_string(),
-            mode: ApplicationMode::Mode3,
-            decision: Decision::Failed,
-            selected_patch_id: None,
-            matched_perfect_patch_id: None,
-            deviations: None,
-            reasoning: None,
-            diagnostics,
-        }
+        Self::response(ApplicationMode::Mode3, Decision::Failed, diagnostics)
     }
 }
 
