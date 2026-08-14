@@ -40,7 +40,7 @@ either:
 
 1. **Build the project**:
 
-   ```bash cargo build --release ```
+   ```bash cargo build --release --features cli ```
 
 2. **Prepare a JSON request** (see [Configuration](#configuration) and [Modes
 explained](#modes-explained)):
@@ -49,11 +49,11 @@ explained](#modes-explained)):
 
 3. **Run the CLI**:
 
-   ```bash cargo run --release -- --input request.json > response.json ```
+   ```bash cargo run --release --features cli -- --input request.json > response.json ```
 
    Or pipe via stdin:
 
-   ```bash cat request.json | cargo run --release -- > response.json ```
+   ```bash cat request.json | cargo run --release --features cli -- > response.json ```
 
 4. **Inspect the structured response**:
 
