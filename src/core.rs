@@ -7,6 +7,20 @@ pub struct PatchRefiner;
 
 const MARKERS: &[(&str, &str)] = &[("//", "\n"), ("/*", "*/"), ("#\"", "\"#")];
 
+const MAX_ORIGINAL_CODE_SNIPPET_CHARS: usize = 4000;
+
+fn apply_failure_message(
+    candidate_id: &str,
+    error: impl std::fmt::Display,
+    original: &str,
+) -> String {
+    let truncated: String = original
+        .chars()
+        .take(MAX_ORIGINAL_CODE_SNIPPET_CHARS)
+        .collect();
+    format!("Candidate {candidate_id} apply failed: {error}\n\nCurrent original_code:\n{truncated}")
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum RefineError {
     #[error("invalid --mode value: {0}")]
@@ -506,7 +520,7 @@ impl PatchRefiner {
                     diagnostics.push(Diagnostic {
                         level: DiagnosticLevel::Error,
                         category: DiagnosticCategory::PatchApply,
-                        message: format!("Candidate {} apply failed: {}", candidate.id, e),
+                        message: apply_failure_message(&candidate.id, e, original),
                         location: None,
                     });
                     continue;
@@ -625,7 +639,7 @@ impl PatchRefiner {
                     diagnostics.push(Diagnostic {
                         level: DiagnosticLevel::Error,
                         category: DiagnosticCategory::PatchApply,
-                        message: format!("Candidate {} apply failed: {e}", candidate.id),
+                        message: apply_failure_message(&candidate.id, e, original),
                         location: None,
                     });
                     continue;
@@ -1040,5 +1054,53 @@ mod tests {
         let change = prettydiff::diff_words(a, b);
         let d = PatchRefiner::compute_distance(&change, &Default::default());
         assert!(d.is_finite());
+    }
+
+    // See INTELLIGENCE_TRANSFER_RUCHAT_TO_PATCH_REFINER.md section A.1: an
+    // apply-failure diagnostic must carry the real current original_code
+    // (capped at 4000 chars) so a caller can see why the hunk didn't match
+    // without a second round-trip to re-fetch the file.
+    #[test]
+    fn apply_failure_diagnostic_includes_original_code_snippet() {
+        let original = "fn marker_unique_snippet() {\n    1\n}\n";
+        let diff = "--- a/file.rs\n+++ b/file.rs\n@@ -1,3 +1,3 @@\n fn does_not_match() {\n-    1\n+    2\n }\n";
+        let candidates = vec![PatchCandidate {
+            id: "c1".into(),
+            diff_content: diff.into(),
+            target_path: None,
+        }];
+        let config = RefinementConfig::default();
+
+        let resp = PatchRefiner::evaluate_mode_3(original, &candidates, &config);
+        let msg = &resp
+            .diagnostics
+            .iter()
+            .find(|d| d.category == DiagnosticCategory::PatchApply)
+            .expect("expected an apply-failure diagnostic")
+            .message;
+        assert!(
+            msg.contains("marker_unique_snippet"),
+            "diagnostic message should contain a snippet of the real original_code, got: {msg}"
+        );
+
+        let lang_weights = LanguageWeights::default();
+        let resp2 = PatchRefiner::evaluate_modes_1_2_4(
+            original,
+            &candidates,
+            &[],
+            ApplicationMode::Mode1,
+            &config,
+            &lang_weights,
+        );
+        let msg2 = &resp2
+            .diagnostics
+            .iter()
+            .find(|d| d.category == DiagnosticCategory::PatchApply)
+            .expect("expected an apply-failure diagnostic")
+            .message;
+        assert!(
+            msg2.contains("marker_unique_snippet"),
+            "diagnostic message should contain a snippet of the real original_code, got: {msg2}"
+        );
     }
 }
