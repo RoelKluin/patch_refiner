@@ -468,6 +468,10 @@ impl PatchRefiner {
         let mut diagnostics = Vec::new();
 
         for candidate in candidates {
+            // Invariant: never derive a rejection/apply-failure decision from a
+            // model-written hunk header's reported "@@ -start,count +start,count @@"
+            // numbers -- these are unreliable when AI-generated. If counts matter,
+            // recompute them from the hunk body. See .claude/rules/patch-application.md.
             let repaired_candidate_diff = Self::repair_context_lines(&candidate.diff_content);
             let ai_patch = match Patch::from_str(&repaired_candidate_diff) {
                 Ok(p) => p,
