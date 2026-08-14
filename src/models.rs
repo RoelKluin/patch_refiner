@@ -155,10 +155,9 @@ pub struct ReasonDetail {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationMode {
-    Mode1,
-    Mode2,
-    Mode3,
-    Mode4,
+    SyntacticOnly,
+    SingleExemplar,
+    MultiExemplar,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

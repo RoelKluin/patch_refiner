@@ -12,16 +12,16 @@ producing **structured, machine-readable decisions** and diagnostics.
 
 - Accepts original source code and one or more AI-generated patch candidates.
 - Optionally compares them against **reference ("perfect") patches** with
-  structured reasoning (Modes 1, 2, 4).
+  structured reasoning (SingleExemplar/MultiExemplar).
 - Validates patches syntactically: does the patch parse (unified diff format)
   and apply cleanly to `original_code`?
 - Returns a **structured JSON response** with:
   - `decision`: `approved`, `rejected`, or `failed`
   - Selected patch ID (if any)
-  - Matched perfect patch ID (if applicable, Modes 1/2/4)
+  - Matched perfect patch ID (if applicable, SingleExemplar/MultiExemplar)
   - Structured deviations (how the AI patch differs from the closest perfect
-    patch, Modes 1/2/4)
-  - Structured reasoning (when available, Modes 1/2/4)
+    patch, SingleExemplar/MultiExemplar)
+  - Structured reasoning (when available, SingleExemplar/MultiExemplar)
   - Diagnostics (parse errors, apply errors, etc.)
 
 **Semantic validation (compile checks, test execution, linting) is intentionally
@@ -77,7 +77,7 @@ Configuration is passed as part of the JSON request under the `config` field.
 See `src/models.rs` for the authoritative Rust structs and resulting JSON
 schema.
 
-### Example: Mode 1 (Rust, with perfect patches and reasoning)
+### Example: SingleExemplar (Rust, with a perfect patch and reasoning)
 
 ```json { "original_code": "fn main() {\n  println!(\"Hello\");\n}",
 "candidates": [ { "id": "ai_patch_1", "diff_content": "--- a/main.rs\n+++
@@ -91,7 +91,7 @@ println!(\"Hello\");\n+  println!(\"Hello, world!\");\n }", "reason": {
 "rust", "file_path": "main.rs", "whitespace": { "ignore_whitespace": true,
 "normalize_line_endings": true } } } ```
 
-### Example: Mode 3 (syntactic validation only)
+### Example: SyntacticOnly (syntactic validation only)
 
 ```json { "original_code": "fn main() {\n  println!(\"Hello\");\n}",
 "candidates": [ { "id": "ai_patch_1", "diff_content": "--- a/main.rs\n+++
@@ -100,35 +100,35 @@ println!(\"Hello, world!\");\n }" } ], "perfect_patches": null,
 "problem_statement": "Improve greeting message.", "config": { "language":
 "rust", "file_path": "main.rs" } } ```
 
-When `perfect_patches` is `null` or empty, Mode 3 is inferred: patch_refiner
+When `perfect_patches` is `null` or empty, SyntacticOnly is inferred: patch_refiner
 validates that the patch parses and applies cleanly. The caller (e.g., `ruchat`)
 is responsible for any semantic validation (compile checks, tests, linting).
 
 ## Modes explained
 
-The module supports four application modes. The mode can be:
+The module supports three application modes. The mode can be:
 
-- **Inferred** from the presence/absence of `perfect_patches` and their
-  `reason`, or
+- **Inferred** from the presence/absence of `perfect_patches`, or
 - **Explicitly set** via `config.mode_override`.
 
-### Mode 1 – Known perfect patch(es) and known reasoning
+### SingleExemplar – One known perfect patch
 
 **Inputs:**
 
 - `original_code`
 - One or more AI-generated patch candidates
-- One or more **perfect patches**, each with **structured reasoning**
-- Optional `problem_statement` and high-level reason
+- Exactly one **perfect patch**, with or without structured reasoning
+- Optional `problem_statement`
 
 **Behavior:**
 
-- If any AI-generated patch **exactly matches** a perfect patch (modulo
+- If any AI-generated patch **exactly matches** the perfect patch (modulo
   configured whitespace/normalization rules):
   - `decision`: `approved`
   - `selected_patch_id`: ID of the matching AI patch
   - `matched_perfect_patch_id`: ID of the matched perfect patch
-  - `reasoning`: Reused structured reasoning from the perfect patch
+  - `reasoning`: reused structured reasoning from the perfect patch, if it has
+    any (otherwise omitted — no reasoning is inferred or fabricated)
 - If no AI-generated patch matches:
   - `decision`: `rejected`
   - `deviations`:
@@ -136,37 +136,14 @@ The module supports four application modes. The mode can be:
     - `diff_from_perfect`: unified diff between AI-patched code and
       perfect-patched code
     - `distance_score`: numeric similarity score (lower is better)
-  - `reasoning`: reasoning from the closest perfect patch, if available
+  - `reasoning`: reasoning from the closest perfect patch, if it has any
 
-Use Mode 1 when you have **golden patches** and want the AI to reproduce them
-with explanations.
-
----
-
-### Mode 2 – Known perfect patch(es), no reasoning
-
-**Inputs:**
-
-- `original_code`
-- AI-generated patch candidates
-- One or more perfect patches **without** detailed reasoning
-
-**Behavior:**
-
-- Same matching logic as Mode 1.
-- On exact match:
-  - `decision`: `approved`
-  - No `reasoning` included (since none exists).
-- On mismatch:
-  - `decision`: `rejected`
-  - `deviations` as in Mode 1.
-  - No attempt to infer or fabricate reasoning.
-
-Use Mode 2 when you have reference patches but no structured rationale.
+Use SingleExemplar when you have a **golden patch** and want the AI to
+reproduce it, with explanations included whenever the exemplar carries them.
 
 ---
 
-### Mode 3 – Syntactic validation only
+### SyntacticOnly – Syntactic validation only
 
 **Inputs:**
 
@@ -194,12 +171,12 @@ is **not performed by patch_refiner**. The caller (e.g., `ruchat`) is
 responsible for running semantic checks on approved candidates using its own
 sandboxed subprocess infrastructure.
 
-Use Mode 3 when you do **not** have golden patches and rely on syntactic
-validation as a precondition for the caller's semantic checks.
+Use SyntacticOnly when you do **not** have golden patches and rely on
+syntactic validation as a precondition for the caller's semantic checks.
 
 ---
 
-### Mode 4 – Multiple competing perfect patches
+### MultiExemplar – Multiple competing perfect patches
 
 **Inputs:**
 
@@ -223,17 +200,17 @@ validation as a precondition for the caller's semantic checks.
   - `reasoning`: reasoning from the closest perfect patch, optionally annotated
     to highlight mismatches
 
-Use Mode 4 when multiple correct implementations exist and you want to know
-which pattern the AI approximated.
+Use MultiExemplar when multiple correct implementations exist and you want to
+know which pattern the AI approximated.
 
 ## CLI usage
 
 ```bash patch-refiner [OPTIONS]
 
 OPTIONS: -i, --input <FILE>   Path to JSON request file (reads from stdin if
-omitted) --mode <MODE>    Explicit mode override (mode1, mode2, mode3, mode4)
---ignore-whitespace Ignore whitespace when comparing patches -h, --help
-Print help -V, --version        Print version ```
+omitted) --mode <MODE>    Explicit mode override (syntactic_only,
+single_exemplar, multi_exemplar) --ignore-whitespace Ignore whitespace when
+comparing patches -h, --help Print help -V, --version        Print version ```
 
 Examples:
 
@@ -242,7 +219,7 @@ Examples:
 patch-refiner --input request.json > response.json
 
 # From stdin with explicit mode
-cat request.json | patch-refiner --mode mode3 > response.json ```
+cat request.json | patch-refiner --mode syntactic_only > response.json ```
 
 ## Error handling
 
@@ -257,21 +234,21 @@ Common diagnostic categories (applicable to patch_refiner's syntactic scope):
 
 - `patch_parse`: Invalid diff format.
 - `patch_apply`: Patch could not be applied to the original code.
-- `similarity`: Issues or warnings related to similarity computation (Modes
-  1/2/4 only).
+- `similarity`: Issues or warnings related to similarity computation (exemplar
+  modes only).
 - `other`: Miscellaneous errors.
 
 The top-level `decision` will be:
 
-- `approved`: At least one candidate passed all syntactic checks (and, in Modes
-  1/2/4, matched a perfect patch if required).
-- `rejected`: No candidate matched a perfect patch (Modes 1/2/4), but patches
+- `approved`: At least one candidate passed all syntactic checks (and, in
+  exemplar modes, matched a perfect patch if required).
+- `rejected`: No candidate matched a perfect patch (SingleExemplar/MultiExemplar), but patches
   were syntactically valid.
 - `failed`: No candidate passed syntactic validation (e.g., all failed to parse
-  or apply in Mode 3).
+  or apply in SyntacticOnly).
 
 Callers should inspect both `decision` and `diagnostics` to determine next
-steps. In Mode 3, an `approved` response indicates the patch is a safe syntactic
+steps. In SyntacticOnly, an `approved` response indicates the patch is a safe syntactic
 precondition for the caller's semantic checks (compile, test, lint); the
 caller's own subprocess execution remains responsible for proving correctness.
 

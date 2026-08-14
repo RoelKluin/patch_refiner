@@ -357,10 +357,10 @@ impl PatchRefiner {
 
         let perfect_patches = req.perfect_patches.clone().unwrap_or_default();
 
-        Ok(if mode == ApplicationMode::Mode3 {
+        Ok(if mode == ApplicationMode::SyntacticOnly {
             Self::evaluate_mode_3(&req.original_code, &req.candidates, &config)
         } else {
-            Self::evaluate_modes_1_2_4(
+            Self::evaluate_exemplar_modes(
                 &req.original_code,
                 &req.candidates,
                 &perfect_patches,
@@ -379,15 +379,9 @@ impl PatchRefiner {
         }
         let perfects = req.perfect_patches.as_deref().unwrap_or(&[]);
         match perfects.len() {
-            0 => ApplicationMode::Mode3,
-            1 => {
-                if perfects[0].reason.is_some() {
-                    ApplicationMode::Mode1
-                } else {
-                    ApplicationMode::Mode2
-                }
-            }
-            _ => ApplicationMode::Mode4,
+            0 => ApplicationMode::SyntacticOnly,
+            1 => ApplicationMode::SingleExemplar,
+            _ => ApplicationMode::MultiExemplar,
         }
     }
 
@@ -612,7 +606,7 @@ impl PatchRefiner {
         dist
     }
 
-    fn evaluate_modes_1_2_4(
+    fn evaluate_exemplar_modes(
         original: &str,
         candidates: &[PatchCandidate],
         perfects: &[PerfectPatch],
@@ -762,11 +756,19 @@ impl PatchRefiner {
             };
             return RefinementResponse {
                 selected_patch_id: Some(candidate.id.clone()),
-                ..Self::response(ApplicationMode::Mode3, Decision::Approved, diagnostics)
+                ..Self::response(
+                    ApplicationMode::SyntacticOnly,
+                    Decision::Approved,
+                    diagnostics,
+                )
             };
         }
 
-        Self::response(ApplicationMode::Mode3, Decision::Failed, diagnostics)
+        Self::response(
+            ApplicationMode::SyntacticOnly,
+            Decision::Failed,
+            diagnostics,
+        )
     }
 }
 
@@ -954,9 +956,15 @@ mod tests {
             problem_statement: None,
             config: None,
         };
-        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode3);
+        assert_eq!(
+            PatchRefiner::resolve_mode(&req),
+            ApplicationMode::SyntacticOnly
+        );
         req.perfect_patches = Some(Vec::new());
-        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode3);
+        assert_eq!(
+            PatchRefiner::resolve_mode(&req),
+            ApplicationMode::SyntacticOnly
+        );
         req.perfect_patches.as_mut().map(|p| {
             p.push(PerfectPatch {
                 id: String::new(),
@@ -967,14 +975,34 @@ mod tests {
                 }),
             })
         });
-        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode1);
+        assert_eq!(
+            PatchRefiner::resolve_mode(&req),
+            ApplicationMode::SingleExemplar
+        );
         req.perfect_patches.as_mut().map(|p| p[0].reason.take());
-        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode2);
+        assert_eq!(
+            PatchRefiner::resolve_mode(&req),
+            ApplicationMode::SingleExemplar
+        );
+        req.perfect_patches.as_mut().map(|p| {
+            p.push(PerfectPatch {
+                id: "second".to_string(),
+                diff_content: String::new(),
+                reason: None,
+            })
+        });
+        assert_eq!(
+            PatchRefiner::resolve_mode(&req),
+            ApplicationMode::MultiExemplar
+        );
         req.config = Some(RefinementConfig {
-            mode_override: Some(ApplicationMode::Mode1),
+            mode_override: Some(ApplicationMode::SingleExemplar),
             ..Default::default()
         });
-        assert_eq!(PatchRefiner::resolve_mode(&req), ApplicationMode::Mode1);
+        assert_eq!(
+            PatchRefiner::resolve_mode(&req),
+            ApplicationMode::SingleExemplar
+        );
     }
 
     #[test]
@@ -1241,11 +1269,11 @@ mod tests {
         );
 
         let lang_weights = LanguageWeights::default();
-        let resp2 = PatchRefiner::evaluate_modes_1_2_4(
+        let resp2 = PatchRefiner::evaluate_exemplar_modes(
             original,
             &candidates,
             &[],
-            ApplicationMode::Mode1,
+            ApplicationMode::SingleExemplar,
             &config,
             &lang_weights,
         );

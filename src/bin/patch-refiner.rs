@@ -68,10 +68,9 @@ fn main() -> Result<()> {
 
     if let Some(m) = cli.mode {
         config.mode_override = Some(match m.to_lowercase().as_str() {
-            "mode1" => ApplicationMode::Mode1,
-            "mode2" => ApplicationMode::Mode2,
-            "mode3" => ApplicationMode::Mode3,
-            "mode4" => ApplicationMode::Mode4,
+            "syntactic_only" => ApplicationMode::SyntacticOnly,
+            "single_exemplar" => ApplicationMode::SingleExemplar,
+            "multi_exemplar" => ApplicationMode::MultiExemplar,
             other => return Err(RefineError::InvalidMode(other.to_string())),
         });
     }
