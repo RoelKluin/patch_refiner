@@ -55,7 +55,16 @@ DONE_FILE="${DONE_FILE:-tasks_done.txt}"
 # given run. Kept outside the repo deliberately -- a log directory inside it
 # would be swept up by the per-task 'git add -A' below, and would trip the
 # working-tree-clean pre-flight check in any repo that had not gitignored it.
-LOG_DIR="${LOG_DIR:-$HOME/logs/$(basename "$REPO_ROOT")}"
+#
+# basename(REPO_ROOT) alone is NOT enough: claude-box containers commonly
+# mount an unrelated repo at the same generic path (e.g. /work), so two
+# different projects' loops collided on $HOME/logs/work/<date>.log and their
+# task/gate output interleaved in one file (discovered live, 2026-08-14).
+# Prefer the git remote (globally unique across repos/hosts); only fall back
+# to the directory basename for a repo with no remote configured.
+_repo_ident="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null |
+  sed -E 's#\.git$##; s#.*[/:]([^/]+/[^/]+)$#\1#; s#/#-#')"
+LOG_DIR="${LOG_DIR:-$HOME/logs/${_repo_ident:-$(basename "$REPO_ROOT")}}"
 DATE_TAG="$(date +%F)"
 LOG_FILE="$LOG_DIR/$DATE_TAG.log"
 FAIL_FILE="$LOG_DIR/failures"
@@ -134,15 +143,29 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 BRANCH="overnight/$DATE_TAG"
+# Same-day reruns (e.g. feeding more tasks after an earlier run this
+# session) resume onto the existing branch instead of refusing -- it's
+# append-only work on an isolated, never-pushed branch, so there's nothing
+# unsafe about continuing it. A branch from a *different* day is left alone;
+# only today's own branch is ever reused this way.
+BRANCH_EXISTS=0
 if git rev-parse --verify --quiet "$BRANCH" >/dev/null; then
-  echo "Branch $BRANCH already exists; refusing to reuse it. Delete it or rerun tomorrow." >&2
-  exit 1
+  BRANCH_EXISTS=1
 fi
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
-  git checkout -b "$BRANCH"
+  if [[ "$BRANCH_EXISTS" -eq 1 ]]; then
+    echo "Branch $BRANCH already exists; resuming on it." | tee -a "$LOG_FILE"
+    git checkout "$BRANCH"
+  else
+    git checkout -b "$BRANCH"
+  fi
 else
-  echo "[dry-run] would create branch $BRANCH"
+  if [[ "$BRANCH_EXISTS" -eq 1 ]]; then
+    echo "[dry-run] would resume on existing branch $BRANCH"
+  else
+    echo "[dry-run] would create branch $BRANCH"
+  fi
 fi
 
 # Pre-flight: if the gate itself is already broken on the starting commit,
