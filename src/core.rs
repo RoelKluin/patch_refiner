@@ -11,6 +11,7 @@ const MAX_ORIGINAL_CODE_SNIPPET_CHARS: usize = 4000;
 
 fn apply_failure_message(
     candidate_id: &str,
+    target_path: &str,
     error: impl std::fmt::Display,
     original: &str,
 ) -> String {
@@ -18,7 +19,9 @@ fn apply_failure_message(
         .chars()
         .take(MAX_ORIGINAL_CODE_SNIPPET_CHARS)
         .collect();
-    format!("Candidate {candidate_id} apply failed: {error}\n\nCurrent original_code:\n{truncated}")
+    format!(
+        "Candidate {candidate_id} apply failed against {target_path}: {error}\n\nCurrent content of {target_path}:\n{truncated}"
+    )
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -343,6 +346,22 @@ impl PatchRefiner {
         })
     }
 
+    fn resolve_file<'a>(
+        files: &'a std::collections::BTreeMap<String, String>,
+        target_path: &str,
+        label: &str,
+        id: &str,
+        level: DiagnosticLevel,
+    ) -> std::result::Result<&'a str, Diagnostic> {
+        files.get(target_path).map(String::as_str).ok_or_else(|| {
+            Self::diag(
+                level,
+                DiagnosticCategory::Other,
+                format!("{label} {id} targets {target_path:?}, which is not present in `files`"),
+            )
+        })
+    }
+
     pub fn evaluate(req: RefinementRequest) -> Result<RefinementResponse> {
         if let Some(sv) = &req.schema_version
             && sv != SCHEMA_VERSION
@@ -358,10 +377,10 @@ impl PatchRefiner {
         let perfect_patches = req.perfect_patches.clone().unwrap_or_default();
 
         Ok(if mode == ApplicationMode::SyntacticOnly {
-            Self::evaluate_mode_3(&req.original_code, &req.candidates, &config)
+            Self::evaluate_mode_3(&req.files, &req.candidates, &config)
         } else {
             Self::evaluate_exemplar_modes(
-                &req.original_code,
+                &req.files,
                 &req.candidates,
                 &perfect_patches,
                 mode,
@@ -607,7 +626,7 @@ impl PatchRefiner {
     }
 
     fn evaluate_exemplar_modes(
-        original: &str,
+        files: &std::collections::BTreeMap<String, String>,
         candidates: &[PatchCandidate],
         perfects: &[PerfectPatch],
         mode: ApplicationMode,
@@ -618,6 +637,20 @@ impl PatchRefiner {
         let mut diagnostics = Vec::new();
 
         for candidate in candidates {
+            let original = match Self::resolve_file(
+                files,
+                &candidate.target_path,
+                "Candidate",
+                &candidate.id,
+                DiagnosticLevel::Error,
+            ) {
+                Ok(o) => o,
+                Err(d) => {
+                    diagnostics.push(d);
+                    continue;
+                }
+            };
+
             // Invariant: never derive a rejection/apply-failure decision from a
             // model-written hunk header's reported "@@ -start,count +start,count @@"
             // numbers -- these are unreliable when AI-generated. If counts matter,
@@ -642,13 +675,19 @@ impl PatchRefiner {
                     diagnostics.push(Self::diag(
                         DiagnosticLevel::Error,
                         DiagnosticCategory::PatchApply,
-                        apply_failure_message(&candidate.id, e, original),
+                        apply_failure_message(&candidate.id, &candidate.target_path, e, original),
                     ));
                     continue;
                 }
             };
 
-            for perfect in perfects {
+            // Only compare against exemplars targeting the same file -- a
+            // candidate and a perfect patch touching different files aren't
+            // comparable via a single-file text diff.
+            for perfect in perfects
+                .iter()
+                .filter(|p| p.target_path == candidate.target_path)
+            {
                 let repaired_perfect_diff = Self::repair_context_lines(&perfect.diff_content);
                 let p_patch = match Self::parse_patch(
                     &repaired_perfect_diff,
@@ -716,7 +755,7 @@ impl PatchRefiner {
     }
 
     fn evaluate_mode_3(
-        original: &str,
+        files: &std::collections::BTreeMap<String, String>,
         candidates: &[PatchCandidate],
         config: &RefinementConfig,
     ) -> RefinementResponse {
@@ -730,6 +769,19 @@ impl PatchRefiner {
         }
 
         for candidate in candidates {
+            let original = match Self::resolve_file(
+                files,
+                &candidate.target_path,
+                "Candidate",
+                &candidate.id,
+                DiagnosticLevel::Error,
+            ) {
+                Ok(o) => o,
+                Err(d) => {
+                    diagnostics.push(d);
+                    continue;
+                }
+            };
             let repaired_candidate_diff = Self::repair_context_lines(&candidate.diff_content);
             let patch = match Self::parse_patch(
                 &repaired_candidate_diff,
@@ -749,7 +801,7 @@ impl PatchRefiner {
                     diagnostics.push(Self::diag(
                         DiagnosticLevel::Error,
                         DiagnosticCategory::PatchApply,
-                        apply_failure_message(&candidate.id, e, original),
+                        apply_failure_message(&candidate.id, &candidate.target_path, e, original),
                     ));
                     continue;
                 }
@@ -950,7 +1002,7 @@ mod tests {
     fn test_resolve_mode() {
         let mut req = RefinementRequest {
             schema_version: None,
-            original_code: String::new(),
+            files: std::collections::BTreeMap::new(),
             candidates: Vec::new(),
             perfect_patches: None,
             problem_statement: None,
@@ -969,6 +1021,7 @@ mod tests {
             p.push(PerfectPatch {
                 id: String::new(),
                 diff_content: String::new(),
+                target_path: String::new(),
                 reason: Some(Reason {
                     summary: String::new(),
                     details: Vec::new(),
@@ -988,6 +1041,7 @@ mod tests {
             p.push(PerfectPatch {
                 id: "second".to_string(),
                 diff_content: String::new(),
+                target_path: String::new(),
                 reason: None,
             })
         });
@@ -1252,11 +1306,13 @@ mod tests {
         let candidates = vec![PatchCandidate {
             id: "c1".into(),
             diff_content: diff.into(),
-            target_path: None,
+            target_path: "file.rs".into(),
         }];
         let config = RefinementConfig::default();
+        let files =
+            std::collections::BTreeMap::from([("file.rs".to_string(), original.to_string())]);
 
-        let resp = PatchRefiner::evaluate_mode_3(original, &candidates, &config);
+        let resp = PatchRefiner::evaluate_mode_3(&files, &candidates, &config);
         let msg = &resp
             .diagnostics
             .iter()
@@ -1270,7 +1326,7 @@ mod tests {
 
         let lang_weights = LanguageWeights::default();
         let resp2 = PatchRefiner::evaluate_exemplar_modes(
-            original,
+            &files,
             &candidates,
             &[],
             ApplicationMode::SingleExemplar,
@@ -1287,5 +1343,84 @@ mod tests {
             msg2.contains("marker_unique_snippet"),
             "diagnostic message should contain a snippet of the real original_code, got: {msg2}"
         );
+    }
+
+    #[test]
+    fn multi_file_candidate_applies_against_its_own_target_path() {
+        let files = std::collections::BTreeMap::from([
+            ("a.rs".to_string(), "fn a() {\n    1\n}\n".to_string()),
+            ("b.rs".to_string(), "fn b() {\n    2\n}\n".to_string()),
+        ]);
+        let diff_for_b = "--- a/b.rs\n+++ b/b.rs\n@@ -1,3 +1,3 @@\n fn b() {\n-    2\n+    3\n }\n";
+        let candidates = vec![PatchCandidate {
+            id: "c1".into(),
+            diff_content: diff_for_b.into(),
+            target_path: "b.rs".into(),
+        }];
+        let config = RefinementConfig::default();
+
+        let resp = PatchRefiner::evaluate_mode_3(&files, &candidates, &config);
+        assert_eq!(resp.decision, Decision::Approved);
+        assert_eq!(resp.selected_patch_id, Some("c1".to_string()));
+    }
+
+    #[test]
+    fn candidate_targeting_missing_file_reports_diagnostic_not_panic() {
+        let files =
+            std::collections::BTreeMap::from([("a.rs".to_string(), "fn a() {}\n".to_string())]);
+        let candidates = vec![PatchCandidate {
+            id: "c1".into(),
+            diff_content:
+                "--- a/missing.rs\n+++ b/missing.rs\n@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { }\n"
+                    .into(),
+            target_path: "missing.rs".into(),
+        }];
+        let config = RefinementConfig::default();
+
+        let resp = PatchRefiner::evaluate_mode_3(&files, &candidates, &config);
+        assert_eq!(resp.decision, Decision::Failed);
+        let msg = &resp
+            .diagnostics
+            .iter()
+            .find(|d| d.category == DiagnosticCategory::Other && d.message.contains("missing.rs"))
+            .expect("expected a diagnostic naming the missing target_path")
+            .message;
+        assert!(msg.contains("not present in `files`"));
+    }
+
+    #[test]
+    fn exemplar_only_compares_candidates_against_same_target_path_perfects() {
+        let files = std::collections::BTreeMap::from([
+            ("a.rs".to_string(), "fn a() {\n    1\n}\n".to_string()),
+            ("b.rs".to_string(), "fn b() {\n    2\n}\n".to_string()),
+        ]);
+        let diff_for_a = "--- a/a.rs\n+++ b/a.rs\n@@ -1,3 +1,3 @@\n fn a() {\n-    1\n+    9\n }\n";
+        let candidates = vec![PatchCandidate {
+            id: "c1".into(),
+            diff_content: diff_for_a.into(),
+            target_path: "a.rs".into(),
+        }];
+        // A perfect patch for a *different* file must never be treated as a
+        // match, even if it happens to produce identical resulting text.
+        let perfects = vec![PerfectPatch {
+            id: "p1".into(),
+            diff_content:
+                "--- a/b.rs\n+++ b/b.rs\n@@ -1,3 +1,3 @@\n fn b() {\n-    2\n+    9\n }\n".into(),
+            target_path: "b.rs".into(),
+            reason: None,
+        }];
+        let config = RefinementConfig::default();
+        let lang_weights = LanguageWeights::default();
+
+        let resp = PatchRefiner::evaluate_exemplar_modes(
+            &files,
+            &candidates,
+            &perfects,
+            ApplicationMode::SingleExemplar,
+            &config,
+            &lang_weights,
+        );
+        assert_eq!(resp.decision, Decision::Rejected);
+        assert!(resp.deviations.is_none());
     }
 }

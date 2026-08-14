@@ -10,11 +10,12 @@ producing **structured, machine-readable decisions** and diagnostics.
 
 `patch-refinement`:
 
-- Accepts original source code and one or more AI-generated patch candidates.
+- Accepts one or more source files (keyed by path) and one or more
+  AI-generated patch candidates, each naming which file it targets.
 - Optionally compares them against **reference ("perfect") patches** with
   structured reasoning (SingleExemplar/MultiExemplar).
 - Validates patches syntactically: does the patch parse (unified diff format)
-  and apply cleanly to `original_code`?
+  and apply cleanly to its target file?
 - Returns a **structured JSON response** with:
   - `decision`: `approved`, `rejected`, or `failed`
   - Selected patch ID (if any)
@@ -79,10 +80,11 @@ schema.
 
 ### Example: SingleExemplar (Rust, with a perfect patch and reasoning)
 
-```json { "original_code": "fn main() {\n  println!(\"Hello\");\n}",
-"candidates": [ { "id": "ai_patch_1", "diff_content": "--- a/main.rs\n+++
-b/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-  println!(\"Hello\");\n+
-println!(\"Hello, world!\");\n }" } ], "perfect_patches": [ { "id": "perfect_1",
+```json { "files": { "main.rs": "fn main() {\n  println!(\"Hello\");\n}" },
+"candidates": [ { "id": "ai_patch_1", "target_path": "main.rs",
+"diff_content": "--- a/main.rs\n+++ b/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-
+println!(\"Hello\");\n+  println!(\"Hello, world!\");\n }" } ],
+"perfect_patches": [ { "id": "perfect_1", "target_path": "main.rs",
 "diff_content": "--- a/main.rs\n+++ b/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-
 println!(\"Hello\");\n+  println!(\"Hello, world!\");\n }", "reason": {
 "summary": "Improve greeting message.", "details": [ { "hunk_index": 0,
@@ -93,12 +95,24 @@ println!(\"Hello\");\n+  println!(\"Hello, world!\");\n }", "reason": {
 
 ### Example: SyntacticOnly (syntactic validation only)
 
-```json { "original_code": "fn main() {\n  println!(\"Hello\");\n}",
-"candidates": [ { "id": "ai_patch_1", "diff_content": "--- a/main.rs\n+++
-b/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-  println!(\"Hello\");\n+
-println!(\"Hello, world!\");\n }" } ], "perfect_patches": null,
-"problem_statement": "Improve greeting message.", "config": { "language":
-"rust", "file_path": "main.rs" } } ```
+```json { "files": { "main.rs": "fn main() {\n  println!(\"Hello\");\n}" },
+"candidates": [ { "id": "ai_patch_1", "target_path": "main.rs",
+"diff_content": "--- a/main.rs\n+++ b/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-
+println!(\"Hello\");\n+  println!(\"Hello, world!\");\n }" } ],
+"perfect_patches": null, "problem_statement": "Improve greeting message.",
+"config": { "language": "rust", "file_path": "main.rs" } } ```
+
+### Example: multiple files in one request
+
+`files` may hold more than one entry; each candidate/perfect patch declares
+which one it targets via `target_path` (always required — never inferred from
+the diff's own `--- a/`/`+++ b/` headers). A candidate is only ever compared
+against exemplars sharing the same `target_path`:
+
+```json { "files": { "a.rs": "fn a() {}\n", "b.rs": "fn b() {}\n" },
+"candidates": [ { "id": "ai_patch_1", "target_path": "b.rs", "diff_content":
+"--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-fn b() {}\n+fn b() { println!(); }\n" }
+], "perfect_patches": null } ```
 
 When `perfect_patches` is `null` or empty, SyntacticOnly is inferred: patch_refiner
 validates that the patch parses and applies cleanly. The caller (e.g., `ruchat`)
@@ -115,7 +129,7 @@ The module supports three application modes. The mode can be:
 
 **Inputs:**
 
-- `original_code`
+- `files` (with an entry for each targeted path)
 - One or more AI-generated patch candidates
 - Exactly one **perfect patch**, with or without structured reasoning
 - Optional `problem_statement`
@@ -147,7 +161,7 @@ reproduce it, with explanations included whenever the exemplar carries them.
 
 **Inputs:**
 
-- `original_code`
+- `files` (with an entry for each targeted path)
 - AI-generated patch candidates
 - Optional `problem_statement`
 - **No** reference patches
@@ -156,7 +170,7 @@ reproduce it, with explanations included whenever the exemplar carries them.
 
 - Perform **syntactic validation only**:
   - Does the patch parse as a valid unified diff?
-  - Does the patch apply cleanly to `original_code` without hunk mismatches?
+  - Does the patch apply cleanly to its `target_path` entry in `files` without hunk mismatches?
 - If a candidate passes syntactic checks:
   - `decision`: `approved`
   - `selected_patch_id`: ID of the passing candidate
@@ -180,7 +194,7 @@ syntactic validation as a precondition for the caller's semantic checks.
 
 **Inputs:**
 
-- `original_code`
+- `files` (with an entry for each targeted path)
 - AI-generated patch candidates
 - Multiple perfect patches representing **different valid solutions**, each with
   its own reasoning

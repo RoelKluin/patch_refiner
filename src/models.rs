@@ -1,12 +1,17 @@
 use super::core::{RefineError, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "2.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefinementRequest {
     pub schema_version: Option<String>,
-    pub original_code: String,
+    /// Keyed by target path (matched against `PatchCandidate`/`PerfectPatch`
+    /// `target_path`), so a request can validate patches spanning multiple
+    /// files in one call. Each individual diff still targets exactly one
+    /// file -- see .claude/rules/patch-application.md on multi-file diffs.
+    pub files: BTreeMap<String, String>,
     pub candidates: Vec<PatchCandidate>,
     pub perfect_patches: Option<Vec<PerfectPatch>>,
     pub problem_statement: Option<String>,
@@ -127,13 +132,17 @@ impl Default for WhitespaceConfig {
 pub struct PatchCandidate {
     pub id: String,
     pub diff_content: String,
-    pub target_path: Option<String>,
+    /// Key into `RefinementRequest.files` this candidate's diff applies to.
+    /// Always required -- never inferred from the diff's own headers.
+    pub target_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerfectPatch {
     pub id: String,
     pub diff_content: String,
+    /// Key into `RefinementRequest.files` this exemplar's diff applies to.
+    pub target_path: String,
     pub reason: Option<Reason>,
 }
 
